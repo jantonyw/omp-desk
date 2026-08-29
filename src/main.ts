@@ -9,10 +9,8 @@ import {
   fetchAvailableModels,
   fetchSessionState,
   formatModelRef,
-  getAvailableCommandsCache,
   getAvailableModelsCache,
   getChangedFiles,
-  getEntries,
   getLastAssistantText,
   getPlanTasks,
   getStatus,
@@ -34,48 +32,24 @@ import {
   subscribeEvents,
   togglePlanTask,
   type BoundModel,
-  type RpcAvailableSlashCommand,
   type Settings,
   type Status,
-  type TranscriptHint,
 } from "./client";
-import { homeDir } from "@tauri-apps/api/path";
 import type { RpcEventPayload } from "./protocol";
 import { initIde } from "./ide";
-import { marked } from "marked";
-import DOMPurify from "dompurify";
+import { initTheme } from "./theme";
+import {
+  defaultSettings,
+  initSettingsPanel,
+  loadSettings,
+  saveSettings,
+  type SettingsFormElements,
+} from "./settings";
+import { initSlashPalette } from "./slash-palette";
+import { initModelSelector } from "./model-selector";
+import { escapeHtml, initTranscriptRenderer } from "./transcript-renderer";
 
-// --- Markdown --------------------------------------------------------------
-
-marked.setOptions({ gfm: true, breaks: true });
-
-const MD_TAGS = [
-  "p",
-  "h1",
-  "h2",
-  "h3",
-  "ul",
-  "ol",
-  "li",
-  "pre",
-  "code",
-  "a",
-  "strong",
-  "em",
-  "blockquote",
-  "br",
-  "hr",
-];
-
-function renderMarkdown(text: string): string {
-  const raw = marked.parse(text, { async: false }) as string;
-  return DOMPurify.sanitize(raw, {
-    ALLOWED_TAGS: MD_TAGS,
-    ALLOWED_ATTR: ["href", "title", "target", "rel", "class"],
-  });
-}
-
-// --- DOM -------------------------------------------------------------------
+// --- DOM References --------------------------------------------------------
 
 const transcriptEl = document.getElementById("transcript")!;
 const paneChatEl = document.getElementById("pane-chat")!;
@@ -102,15 +76,18 @@ const sessionCwdEl = document.getElementById("session-cwd")!;
 const sessionMetaEl = document.getElementById("session-meta")!;
 const slashPaletteEl = document.getElementById("slash-palette")!;
 
-const ompPathEl = document.getElementById("omp-path") as HTMLInputElement;
-const cwdEl = document.getElementById("cwd") as HTMLInputElement;
-const modelEl = document.getElementById("model") as HTMLInputElement;
-const noSessionEl = document.getElementById("no-session") as HTMLInputElement;
-const noSkillsEl = document.getElementById("no-skills") as HTMLInputElement;
-const noRulesEl = document.getElementById("no-rules") as HTMLInputElement;
-const extraArgsEl = document.getElementById("extra-args") as HTMLInputElement;
+const settingsFormElements: SettingsFormElements = {
+  ompPath: document.getElementById("omp-path") as HTMLInputElement,
+  cwd: document.getElementById("cwd") as HTMLInputElement,
+  model: document.getElementById("model") as HTMLInputElement,
+  noSession: document.getElementById("no-session") as HTMLInputElement,
+  noSkills: document.getElementById("no-skills") as HTMLInputElement,
+  noRules: document.getElementById("no-rules") as HTMLInputElement,
+  extraArgs: document.getElementById("extra-args") as HTMLInputElement,
+};
 const settingsPanel = document.getElementById("settings-panel")!;
 const settingsToggle = document.getElementById("settings-toggle") as HTMLButtonElement;
+const applySettingsBtn = document.getElementById("apply-settings")!;
 const themeSelectEl = document.getElementById("theme-select") as HTMLSelectElement;
 
 // --- State -----------------------------------------------------------------
@@ -125,104 +102,14 @@ let status: Status = {
   exited: false,
 };
 
-/** UI mode: Plan asks omp to plan only; Execute implements after confirm. */
 type WorkMode = "plan" | "execute";
 let workMode: WorkMode = "plan";
 let lastPlanText = "";
 let selectingModel = false;
 let activeModelRef = "";
+let settings: Settings = defaultSettings();
 
-/** Slash palette highlight index; -1 when closed. */
-let slashIndex = -1;
-let slashFiltered: RpcAvailableSlashCommand[] = [];
-
-const SETTINGS_KEY = "omp-desk.settings";
 const UI_KEY = "omp-desk.ui";
-const THEME_KEY = "omp-desk.theme";
-
-type ThemeId = "dark" | "midnight" | "light" | "system";
-const THEMES: ThemeId[] = ["dark", "midnight", "light", "system"];
-
-/**
- * Plan invocation notes (real omp surface — do not invent RPC names):
- * - CLI `--plan <model>` sets the planning model (string; also PI_PLAN_MODEL).
- * - CLI `--plan-yolo` forces read-only plan at start, auto-approves the first
- *   proposal, then implements (headless). Pass via Settings → extra args if needed.
- * - rpc-types.ts has no enter_plan_mode / approve_plan command. Interactive
- *   Plan/Execute in this shell therefore uses `prompt` / `abort_and_prompt`
- *   with explicit planning vs execution instructions, then user confirm.
- */
-
-function isThemeId(v: string | null): v is ThemeId {
-  return v !== null && (THEMES as string[]).includes(v);
-}
-
-function resolveColorScheme(theme: ThemeId): "dark" | "light" {
-  if (theme === "light") return "light";
-  if (theme === "dark" || theme === "midnight") return "dark";
-  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-}
-
-function applyTheme(theme: ThemeId): void {
-  document.documentElement.setAttribute("data-theme", theme);
-  document.documentElement.style.colorScheme = resolveColorScheme(theme);
-  if (themeSelectEl.value !== theme) themeSelectEl.value = theme;
-}
-
-function loadTheme(): ThemeId {
-  try {
-    const raw = localStorage.getItem(THEME_KEY);
-    return isThemeId(raw) ? raw : "dark";
-  } catch {
-    return "dark";
-  }
-}
-
-function saveTheme(theme: ThemeId): void {
-  localStorage.setItem(THEME_KEY, theme);
-}
-
-function setTheme(theme: ThemeId): void {
-  saveTheme(theme);
-  applyTheme(theme);
-}
-
-const homeCwdPromise: Promise<string> = homeDir().catch(() => "/workspace");
-const LEGACY_DEFAULT_MODEL = "deepseek/deepseek-v4-pro";
-const ROLE_LABELS = new Set(["default", "smol", "slow", "plan"]);
-
-function defaultSettings(): Settings {
-  return {
-    ompPath: "omp",
-    cwd: "/workspace",
-    model: "",
-    noSession: false,
-    noSkills: false,
-    noRules: false,
-    extraArgs: "",
-  };
-}
-
-async function loadSettings(): Promise<Settings> {
-  let s: Settings;
-  try {
-    const raw = localStorage.getItem(SETTINGS_KEY);
-    s = raw ? { ...defaultSettings(), ...(JSON.parse(raw) as Partial<Settings>) } : defaultSettings();
-  } catch {
-    s = defaultSettings();
-  }
-  if (s.cwd === "/workspace") {
-    s.cwd = await homeCwdPromise;
-  }
-  if (s.model === LEGACY_DEFAULT_MODEL) {
-    s.model = "";
-  }
-  return s;
-}
-
-function saveSettings(s: Settings): void {
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
-}
 
 function loadUiMode(): WorkMode {
   try {
@@ -239,148 +126,66 @@ function saveUiMode(mode: WorkMode): void {
   localStorage.setItem(UI_KEY, JSON.stringify({ mode }));
 }
 
-async function readSettingsForm(): Promise<Settings> {
-  const home = await homeCwdPromise;
-  return {
-    ompPath: ompPathEl.value.trim() || "omp",
-    cwd: cwdEl.value.trim() || home,
-    model: modelEl.value.trim(),
-    noSession: noSessionEl.checked,
-    noSkills: noSkillsEl.checked,
-    noRules: noRulesEl.checked,
-    extraArgs: extraArgsEl.value,
-  };
-}
+// --- Sub-controllers -------------------------------------------------------
 
-function applySettingsToForm(s: Settings): void {
-  ompPathEl.value = s.ompPath;
-  cwdEl.value = s.cwd;
-  modelEl.value = s.model;
-  noSessionEl.checked = s.noSession;
-  noSkillsEl.checked = s.noSkills;
-  noRulesEl.checked = s.noRules;
-  extraArgsEl.value = s.extraArgs;
-}
+initTheme(themeSelectEl);
 
-let settings: Settings = defaultSettings();
+const transcriptRenderer = initTranscriptRenderer({
+  transcriptEl,
+  paneChatEl,
+  welcomeEl,
+});
 
-// --- Rendering -------------------------------------------------------------
+const slashPalette = initSlashPalette(
+  composerEl,
+  slashPaletteEl,
+  slashTriggerBtn,
+);
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
+const modelSelector = initModelSelector(
+  { modelSelectEl, modelTabsEl },
+  async (provider, modelId, ref) => {
+    if (!status.ready || selectingModel) return;
 
-function hasChatMessages(): boolean {
-  return getEntries().some((e) => e.role === "user" || e.role === "assistant");
-}
-
-function updateEmptyChat(): void {
-  const empty = !hasChatMessages();
-  paneChatEl.classList.toggle("empty-chat", empty);
-  welcomeEl.setAttribute("aria-hidden", empty ? "false" : "true");
-}
-
-/** Pending paint mode coalesced via rAF (many deltas → one paint per frame). */
-let paintScheduled = false;
-let paintMode: "stream" | "full" = "full";
-
-function scheduleTranscriptPaint(hint: TranscriptHint): void {
-  if (hint.mode === "full") paintMode = "full";
-  else if (!paintScheduled) paintMode = "stream";
-  // If a full is already pending, keep full.
-  if (paintScheduled) return;
-  paintScheduled = true;
-  requestAnimationFrame(() => {
-    paintScheduled = false;
-    const mode = paintMode;
-    paintMode = "full";
-    if (mode === "stream") {
-      paintLiveStream();
-    } else {
-      renderTranscriptFull();
+    if (!ref) {
+      settings.model = "";
+      settingsFormElements.model.value = "";
+      saveSettings(settings);
+      activeModelRef = status.model || "";
+      renderStatus();
+      appendSystem(
+        "[models] omp default selected for next spawn (omit --model). Active session model unchanged.",
+      );
+      return;
     }
-  });
-}
+    if (!provider || !modelId) return;
 
-/** Update only the live streaming assistant bubble — no marked/DOMPurify. */
-function paintLiveStream(): void {
-  const entries = getEntries();
-  const live = [...entries].reverse().find((e) => e.role === "assistant" && e.streaming);
-  if (!live) {
-    renderTranscriptFull();
-    return;
-  }
-  const node = transcriptEl.querySelector(`.msg.assistant[data-id="${CSS.escape(live.id)}"]`);
-  if (!node) {
-    // First paint of this bubble (or DOM was cleared) — structural insert via full render once.
-    renderTranscriptFull();
-    return;
-  }
-  const atBottom =
-    transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight < 40;
-  const body = node.querySelector(".body");
-  if (body) {
-    body.classList.remove("md");
-    body.textContent = live.text || "";
-  }
-  let thinkingEl = node.querySelector(".thinking .body") as HTMLElement | null;
-  if (live.thinking) {
-    let wrap = node.querySelector(".thinking") as HTMLElement | null;
-    if (!wrap) {
-      wrap = document.createElement("div");
-      wrap.className = "thinking";
-      wrap.innerHTML = `<div class="role">Thinking</div><div class="body"></div>`;
-      node.appendChild(wrap);
-      thinkingEl = wrap.querySelector(".body");
+    const previous = activeModelRef;
+    selectingModel = true;
+    renderStatus();
+    try {
+      const updated = await setModel(provider, modelId);
+      activeModelRef = formatModelRef(updated) || ref;
+      settings.model = activeModelRef;
+      settingsFormElements.model.value = activeModelRef;
+      saveSettings(settings);
+      status = await getStatus().catch(() => status);
+      if (status.model) {
+        activeModelRef = status.model.includes("/") ? status.model : activeModelRef;
+      }
+      modelSelector.render(getAvailableModelsCache(), activeModelRef);
+    } catch (err) {
+      modelSelector.render(getAvailableModelsCache(), previous);
+      appendSystem(`[set_model failed] ${String(err)}`);
+    } finally {
+      selectingModel = false;
+      renderStatus();
     }
-    if (thinkingEl) thinkingEl.textContent = live.thinking;
-  }
-  node.classList.add("streaming");
-  updateEmptyChat();
-  if (atBottom) transcriptEl.scrollTop = transcriptEl.scrollHeight;
-}
+  },
+  () => status.ready && !selectingModel,
+);
 
-function renderTranscriptFull(): void {
-  const entries = getEntries();
-  const atBottom =
-    transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight < 40;
-
-  let html = "";
-  for (const e of entries) {
-    if (e.role === "user") {
-      html += `<div class="msg user"><div class="role">You</div><div class="body">${escapeHtml(e.text)}</div></div>`;
-    } else if (e.role === "assistant") {
-      const thinking = e.thinking
-        ? `<div class="thinking"><div class="role">Thinking</div><div class="body">${escapeHtml(e.thinking)}</div></div>`
-        : "";
-      const tool = e.toolName
-        ? `<div class="tooltag">${escapeHtml(e.toolName)}</div>`
-        : "";
-      const cls = e.streaming ? "msg assistant streaming" : "msg assistant";
-      // While streaming: plain text only. Markdown+sanitize once the turn ends.
-      const body = e.streaming
-        ? escapeHtml(e.text || "")
-        : e.text.trim()
-          ? renderMarkdown(e.text)
-          : "";
-      const bodyClass = e.streaming ? "body" : "body md";
-      html += `<div class="${cls}" data-id="${e.id}"><div class="role">Omp</div>${tool}<div class="${bodyClass}">${body}</div>${thinking}</div>`;
-    } else if (e.role === "tool") {
-      const cls = e.isError ? "msg tool error" : "msg tool";
-      html += `<div class="${cls}"><div class="role">Tool</div><div class="body">${escapeHtml(e.text)}</div></div>`;
-    } else {
-      const cls = e.isError ? "msg system error" : "msg system";
-      html += `<div class="${cls}"><div class="body">${escapeHtml(e.text)}</div></div>`;
-    }
-  }
-  transcriptEl.innerHTML = html;
-  updateEmptyChat();
-  if (atBottom) transcriptEl.scrollTop = transcriptEl.scrollHeight;
-}
+// --- Status & Views Rendering ----------------------------------------------
 
 function renderStatus(): void {
   const modelLabel = activeModelRef || status.model || "omp default";
@@ -424,11 +229,9 @@ function renderStatus(): void {
   abortBtn.disabled = !showAbort;
   abortBtn.hidden = !showAbort;
   runAbortBtn.disabled = !showAbort;
-  modelSelectEl.disabled = !status.ready || selectingModel;
-  setModelTabsDisabled(!status.ready || selectingModel);
+  modelSelector.setDisabled(!status.ready || selectingModel);
   executePlanBtn.disabled = !status.ready || !lastPlanText.trim();
 
-  // Left session pane — Boop row status pill (pid in tooltip only)
   let stateLabel = "starting…";
   if (!status.started) {
     stateLabel = "not started";
@@ -452,131 +255,6 @@ function renderStatus(): void {
   if (sessionCard) {
     sessionCard.title = tipParts.join(" · ");
   }
-}
-
-/** Collect optional default/smol/slow/plan labels if present on the model object. */
-function modelRoleAnnotation(m: BoundModel): string {
-  const found: string[] = [];
-  const push = (v: unknown) => {
-    if (typeof v !== "string") return;
-    const low = v.toLowerCase();
-    if (ROLE_LABELS.has(low)) found.push(low);
-  };
-  push(m.role);
-  for (const r of m.roles ?? []) push(r);
-  for (const t of m.tags ?? []) push(t);
-  const extra = m as BoundModel & Record<string, unknown>;
-  for (const key of ROLE_LABELS) {
-    if (extra[key] === true) found.push(key);
-  }
-  return [...new Set(found)].join(", ");
-}
-
-function chipLabel(m: BoundModel): string {
-  const id = m.id;
-  const provider = m.provider || "";
-  // Prefer short id; prefix provider lightly when helpful.
-  if (provider && !id.toLowerCase().startsWith(provider.toLowerCase())) {
-    return `${provider} · ${id}`;
-  }
-  return id;
-}
-
-function setModelTabsDisabled(disabled: boolean): void {
-  for (const btn of modelTabsEl.querySelectorAll<HTMLButtonElement>(".model-chip")) {
-    btn.disabled = disabled;
-  }
-}
-
-function syncModelChipsActive(selectedRef: string): void {
-  for (const btn of modelTabsEl.querySelectorAll<HTMLButtonElement>(".model-chip")) {
-    const ref = btn.dataset.ref ?? "";
-    const on = ref === selectedRef;
-    btn.classList.toggle("active", on);
-    btn.setAttribute("aria-selected", on ? "true" : "false");
-  }
-}
-
-function renderModelTabs(models: BoundModel[], selectedRef: string): void {
-  const prefer = selectedRef || "";
-  const byProvider = new Map<string, BoundModel[]>();
-  for (const m of models) {
-    const p = m.provider || "unknown";
-    const list = byProvider.get(p);
-    if (list) list.push(m);
-    else byProvider.set(p, [m]);
-  }
-
-  const parts: string[] = [];
-  const defaultActive = !prefer;
-  parts.push(
-    `<button type="button" class="model-chip${defaultActive ? " active" : ""}" role="tab" aria-selected="${
-      defaultActive ? "true" : "false"
-    }" data-ref="" title="omp default">omp default</button>`,
-  );
-
-  const providers = [...byProvider.keys()].sort((a, b) => a.localeCompare(b));
-  for (const provider of providers) {
-    parts.push(
-      `<span class="model-provider-label" aria-hidden="true">${escapeHtml(provider)}</span>`,
-    );
-    const group = byProvider.get(provider)!;
-    group.sort((a, b) => a.id.localeCompare(b.id));
-    for (const m of group) {
-      const ref = formatModelRef(m);
-      const role = modelRoleAnnotation(m);
-      const label = chipLabel(m);
-      const title = role ? `${ref} (${role})` : ref;
-      const active = prefer === ref;
-      parts.push(
-        `<button type="button" class="model-chip${active ? " active" : ""}" role="tab" aria-selected="${
-          active ? "true" : "false"
-        }" data-ref="${escapeHtml(ref)}" data-provider="${escapeHtml(m.provider)}" data-id="${escapeHtml(
-          m.id,
-        )}" title="${escapeHtml(title)}">${escapeHtml(label)}</button>`,
-      );
-    }
-  }
-
-  modelTabsEl.innerHTML = parts.join("");
-  setModelTabsDisabled(!status.ready || selectingModel);
-}
-
-function renderModelSelect(models: BoundModel[], selectedRef: string): void {
-  const current = modelSelectEl.value;
-  const prefer = selectedRef || current || settings.model || "";
-
-  const byProvider = new Map<string, BoundModel[]>();
-  for (const m of models) {
-    const p = m.provider || "unknown";
-    const list = byProvider.get(p);
-    if (list) list.push(m);
-    else byProvider.set(p, [m]);
-  }
-
-  let html = `<option value="">omp default</option>`;
-  const providers = [...byProvider.keys()].sort((a, b) => a.localeCompare(b));
-  for (const provider of providers) {
-    html += `<optgroup label="${escapeHtml(provider)}">`;
-    const group = byProvider.get(provider)!;
-    group.sort((a, b) => a.id.localeCompare(b.id));
-    for (const m of group) {
-      const ref = formatModelRef(m);
-      const role = modelRoleAnnotation(m);
-      // Always show full provider/id — never a truncated display name.
-      const label = role ? `${ref} (${role})` : ref;
-      html += `<option value="${escapeHtml(ref)}" data-provider="${escapeHtml(m.provider)}" data-id="${escapeHtml(m.id)}">${escapeHtml(label)}</option>`;
-    }
-    html += `</optgroup>`;
-  }
-  modelSelectEl.innerHTML = html;
-  if (prefer && [...modelSelectEl.options].some((o) => o.value === prefer)) {
-    modelSelectEl.value = prefer;
-  } else {
-    modelSelectEl.value = "";
-  }
-  modelSelectEl.title = modelSelectEl.value || "omp default";
-  renderModelTabs(models, modelSelectEl.value);
 }
 
 function renderChanges(): void {
@@ -640,102 +318,21 @@ function setWorkMode(mode: WorkMode): void {
   renderStatus();
 }
 
-// --- Slash palette ---------------------------------------------------------
-
-function isSlashMode(text: string): boolean {
-  return text.startsWith("/");
-}
-
-function filterCommands(query: string): RpcAvailableSlashCommand[] {
-  const q = query.replace(/^\//, "").toLowerCase();
-  const all = getAvailableCommandsCache();
-  if (!q) return all.slice(0, 40);
-  return all
-    .filter((c) => {
-      if (c.name.toLowerCase().includes(q)) return true;
-      if ((c.aliases ?? []).some((a) => a.toLowerCase().includes(q))) return true;
-      if ((c.description ?? "").toLowerCase().includes(q)) return true;
-      return false;
-    })
-    .slice(0, 40);
-}
-
-function hideSlashPalette(): void {
-  slashIndex = -1;
-  slashFiltered = [];
-  slashPaletteEl.classList.add("hidden");
-  slashPaletteEl.innerHTML = "";
-  slashPaletteEl.setAttribute("aria-hidden", "true");
-}
-
-function renderSlashPalette(): void {
-  const text = composerEl.value;
-  if (!isSlashMode(text) || text.includes("\n")) {
-    hideSlashPalette();
-    return;
-  }
-  // Only suggest while the first token is being typed (before args settle oddly).
-  const firstSpace = text.indexOf(" ");
-  const query = firstSpace === -1 ? text : text.slice(0, firstSpace);
-  // If user already typed args after a known full command name, hide.
-  if (firstSpace !== -1) {
-    hideSlashPalette();
-    return;
-  }
-
-  slashFiltered = filterCommands(query);
-  if (slashFiltered.length === 0) {
-    hideSlashPalette();
-    return;
-  }
-  if (slashIndex < 0 || slashIndex >= slashFiltered.length) slashIndex = 0;
-
-  slashPaletteEl.innerHTML = slashFiltered
-    .map((c, i) => {
-      const aliases = (c.aliases ?? []).length
-        ? `<span class="slash-alias">${escapeHtml((c.aliases ?? []).map((a) => `/${a}`).join(" "))}</span>`
-        : "";
-      const desc = c.description
-        ? `<span class="slash-desc">${escapeHtml(c.description)}</span>`
-        : "";
-      const hint = c.input?.hint
-        ? `<span class="slash-hint">${escapeHtml(c.input.hint)}</span>`
-        : "";
-      const active = i === slashIndex ? " active" : "";
-      return (
-        `<button type="button" class="slash-item${active}" data-index="${i}" role="option" aria-selected="${
-          i === slashIndex ? "true" : "false"
-        }">` +
-        `<span class="slash-name">/${escapeHtml(c.name)}</span>${aliases}${desc}${hint}` +
-        `</button>`
-      );
-    })
-    .join("");
-  slashPaletteEl.classList.remove("hidden");
-  slashPaletteEl.setAttribute("aria-hidden", "false");
-}
-
-function insertSlashCommand(cmd: RpcAvailableSlashCommand): void {
-  const hint = cmd.input?.hint ? " " : "";
-  composerEl.value = `/${cmd.name}${hint}`;
-  hideSlashPalette();
-  composerEl.focus();
-  const len = composerEl.value.length;
-  composerEl.setSelectionRange(len, len);
-}
-
-function slashPaletteOpen(): boolean {
-  return !slashPaletteEl.classList.contains("hidden") && slashFiltered.length > 0;
-}
-
 // --- Actions ---------------------------------------------------------------
+
+function appendSystem(text: string): void {
+  handleEvent({ kind: "stderr", text });
+}
+
+function bumpMessageCount(): void {
+  status = { ...status, message_count: (status.message_count || 0) + 1 };
+  renderStatus();
+}
 
 async function refreshMessageCount(): Promise<void> {
   try {
     await fetchSessionState();
     const st = await getStatus();
-    // Prefer the higher of local optimistic count vs omp get_state so a race
-    // right after send does not flash back to 0.
     status = {
       ...st,
       message_count: Math.max(st.message_count || 0, status.message_count || 0),
@@ -750,7 +347,7 @@ async function refreshMessageCount(): Promise<void> {
 }
 
 async function doStart(forceModel?: string): Promise<void> {
-  const s = await readSettingsForm();
+  const s = await settingsController.getSettings();
   if (forceModel !== undefined) s.model = forceModel;
   saveSettings(s);
   settings = s;
@@ -759,8 +356,9 @@ async function doStart(forceModel?: string): Promise<void> {
   clearPlanTasks();
   lastPlanText = "";
   activeModelRef = s.model;
-  availableModelsReset();
-  hideSlashPalette();
+  modelSelector.render([], activeModelRef);
+  modelSelector.setDisabled(true);
+  slashPalette.hide();
   try {
     status = await startSession(s);
   } catch (err) {
@@ -773,29 +371,20 @@ async function doStart(forceModel?: string): Promise<void> {
   renderTasks();
 }
 
-function availableModelsReset(): void {
-  renderModelSelect([], activeModelRef);
-  modelSelectEl.disabled = true;
-}
-
-function appendSystem(text: string): void {
-  handleEvent({ kind: "stderr", text });
-}
-
 async function onReadyLoadModels(): Promise<void> {
   try {
     const models = await fetchAvailableModels();
     const st = await getStatus();
     status = st;
     if (st.model) activeModelRef = st.model;
-    renderModelSelect(models, activeModelRef);
+    modelSelector.render(models, activeModelRef);
     if (settings.model) {
       const match = models.find((m) => formatModelRef(m) === settings.model);
       if (match && activeModelRef !== settings.model) {
         try {
           const updated = await setModel(match.provider, match.id);
           activeModelRef = formatModelRef(updated) || settings.model;
-          renderModelSelect(models, activeModelRef);
+          modelSelector.render(models, activeModelRef);
         } catch {
           // Keep listing; spawn --model may already have applied it.
         }
@@ -813,98 +402,6 @@ async function onReadyLoadModels(): Promise<void> {
   renderStatus();
 }
 
-async function onModelPick(): Promise<void> {
-  if (!status.ready || selectingModel) return;
-  const opt = modelSelectEl.selectedOptions[0];
-  const ref = modelSelectEl.value;
-  modelSelectEl.title = ref || "omp default";
-  syncModelChipsActive(ref);
-  if (!ref) {
-    // Empty = follow omp default for *next* spawn; do not invent a clear_model RPC.
-    settings.model = "";
-    modelEl.value = "";
-    saveSettings(settings);
-    activeModelRef = status.model || "";
-    renderStatus();
-    appendSystem("[models] omp default selected for next spawn (omit --model). Active session model unchanged.");
-    return;
-  }
-  const provider = opt?.dataset.provider;
-  const modelId = opt?.dataset.id;
-  if (!provider || !modelId) return;
-
-  const previous = activeModelRef;
-  selectingModel = true;
-  renderStatus();
-  try {
-    const updated = await setModel(provider, modelId);
-    activeModelRef = formatModelRef(updated) || ref;
-    settings.model = activeModelRef;
-    modelEl.value = activeModelRef;
-    saveSettings(settings);
-    status = await getStatus().catch(() => status);
-    if (status.model) activeModelRef = status.model.includes("/") ? status.model : activeModelRef;
-    syncModelChipsActive(activeModelRef);
-  } catch (err) {
-    renderModelSelect(getAvailableModelsCache(), previous);
-    appendSystem(`[set_model failed] ${String(err)}`);
-  } finally {
-    selectingModel = false;
-    renderStatus();
-  }
-}
-
-async function onModelChipClick(btn: HTMLButtonElement): Promise<void> {
-  if (!status.ready || selectingModel) return;
-  const ref = btn.dataset.ref ?? "";
-  const provider = btn.dataset.provider;
-  const modelId = btn.dataset.id;
-
-  // Keep hidden select in sync for a11y / fallback.
-  if ([...modelSelectEl.options].some((o) => o.value === ref)) {
-    modelSelectEl.value = ref;
-  } else {
-    modelSelectEl.value = "";
-  }
-  modelSelectEl.title = ref || "omp default";
-  syncModelChipsActive(ref);
-
-  if (!ref) {
-    settings.model = "";
-    modelEl.value = "";
-    saveSettings(settings);
-    activeModelRef = status.model || "";
-    renderStatus();
-    appendSystem("[models] omp default selected for next spawn (omit --model). Active session model unchanged.");
-    return;
-  }
-  if (!provider || !modelId) {
-    // Fall back to select-driven path if chip lacks datasets.
-    await onModelPick();
-    return;
-  }
-
-  const previous = activeModelRef;
-  selectingModel = true;
-  renderStatus();
-  try {
-    const updated = await setModel(provider, modelId);
-    activeModelRef = formatModelRef(updated) || ref;
-    settings.model = activeModelRef;
-    modelEl.value = activeModelRef;
-    saveSettings(settings);
-    status = await getStatus().catch(() => status);
-    if (status.model) activeModelRef = status.model.includes("/") ? status.model : activeModelRef;
-    renderModelSelect(getAvailableModelsCache(), activeModelRef);
-  } catch (err) {
-    renderModelSelect(getAvailableModelsCache(), previous);
-    appendSystem(`[set_model failed] ${String(err)}`);
-  } finally {
-    selectingModel = false;
-    renderStatus();
-  }
-}
-
 function capturePlanFromTranscript(): void {
   const text = getLastAssistantText();
   if (!text.trim()) return;
@@ -918,26 +415,18 @@ function capturePlanFromTranscript(): void {
   renderStatus();
 }
 
-function bumpMessageCount(): void {
-  status = { ...status, message_count: (status.message_count || 0) + 1 };
-  renderStatus();
-}
-
 function onSend(): void {
   const text = composerEl.value;
   if (!text.trim()) return;
-  if (slashPaletteOpen()) {
-    // Enter while palette open inserts; actual send is a second Enter.
-    const cmd = slashFiltered[slashIndex] ?? slashFiltered[0];
-    if (cmd) insertSlashCommand(cmd);
+  if (slashPalette.isOpen()) {
+    // Handled by keydown / slash controller
     return;
   }
   composerEl.value = "";
-  hideSlashPalette();
+  slashPalette.hide();
 
   const isSlash = text.trimStart().startsWith("/");
 
-  // Slash lines always go through existing prompt path with no Plan/Execute prefix.
   if (isSlash) {
     appendUser(text);
     bumpMessageCount();
@@ -1019,8 +508,8 @@ function onRpcEvent(ev: RpcEventPayload): void {
       status = s;
       renderStatus();
     });
-    modelSelectEl.disabled = true;
-    hideSlashPalette();
+    modelSelector.setDisabled(true);
+    slashPalette.hide();
   }
 
   if (ev.kind === "response") {
@@ -1038,7 +527,7 @@ function onRpcEvent(ev: RpcEventPayload): void {
           const ref = formatModelRef(m);
           if (ref) {
             activeModelRef = ref;
-            renderModelSelect(getAvailableModelsCache(), ref);
+            modelSelector.render(getAvailableModelsCache(), ref);
           }
         }
         renderStatus();
@@ -1061,7 +550,7 @@ function onRpcEvent(ev: RpcEventPayload): void {
       });
     }
     if (f?.type === "available_commands_update") {
-      renderSlashPalette();
+      slashPalette.render();
     }
     if (f?.type === "session_info_update" || f?.type === "config_update") {
       void refreshMessageCount();
@@ -1069,7 +558,7 @@ function onRpcEvent(ev: RpcEventPayload): void {
   }
 }
 
-// --- Wiring ----------------------------------------------------------------
+// --- Wire Event Handlers ---------------------------------------------------
 
 sendBtn.addEventListener("click", onSend);
 abortBtn.addEventListener("click", () => {
@@ -1092,59 +581,20 @@ stopSessionBtn.addEventListener("click", () => {
     })
     .catch((err) => appendSystem(`[stop failed] ${String(err)}`));
 });
-settingsToggle.addEventListener("click", () => {
-  settingsPanel.classList.toggle("open");
-  const isOpen = settingsPanel.classList.contains("open");
-  settingsToggle.textContent = isOpen ? "Hide settings" : "Settings";
-});
-document.getElementById("apply-settings")!.addEventListener("click", () => {
-  // cwd may have changed — reload the IDE side panel tree from the new root.
-  void doStart().then(() => ide.refresh());
-  settingsPanel.classList.remove("open");
-  settingsToggle.textContent = "Settings";
-});
-
-themeSelectEl.addEventListener("change", () => {
-  const v = themeSelectEl.value;
-  setTheme(isThemeId(v) ? v : "dark");
-});
-
-window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
-  if (loadTheme() === "system") applyTheme("system");
-});
 
 modePlanBtn.addEventListener("click", () => setWorkMode("plan"));
 modeExecuteBtn.addEventListener("click", () => {
   if (!lastPlanText.trim()) {
-    appendSystem("[mode] Switch to Plan and capture a plan before Execute, or use Confirm execute.");
+    appendSystem(
+      "[mode] Switch to Plan and capture a plan before Execute, or use Confirm execute.",
+    );
   }
   setWorkMode("execute");
 });
 executePlanBtn.addEventListener("click", () => {
   void onConfirmExecute();
 });
-modelSelectEl.addEventListener("change", () => {
-  void onModelPick();
-});
-modelTabsEl.addEventListener("click", (e) => {
-  const btn = (e.target as HTMLElement).closest(".model-chip") as HTMLButtonElement | null;
-  if (!btn || btn.disabled) return;
-  void onModelChipClick(btn);
-});
-slashTriggerBtn.addEventListener("click", () => {
-  if (!composerEl.value.startsWith("/")) {
-    composerEl.value = `/${composerEl.value}`;
-  }
-  composerEl.focus();
-  const len = composerEl.value.length;
-  // Place caret after leading slash so palette filters from empty query.
-  if (composerEl.value === "/") {
-    composerEl.setSelectionRange(1, 1);
-  } else {
-    composerEl.setSelectionRange(len, len);
-  }
-  renderSlashPalette();
-});
+
 clearChangesBtn.addEventListener("click", () => {
   clearChangedFiles();
 });
@@ -1157,54 +607,9 @@ tasksListEl.addEventListener("change", (e) => {
   }
 });
 
-slashPaletteEl.addEventListener("mousedown", (e) => {
-  // Prevent composer blur before click inserts.
-  e.preventDefault();
-});
-slashPaletteEl.addEventListener("click", (e) => {
-  const btn = (e.target as HTMLElement).closest(".slash-item") as HTMLElement | null;
-  if (!btn) return;
-  const idx = Number(btn.dataset.index);
-  const cmd = slashFiltered[idx];
-  if (cmd) insertSlashCommand(cmd);
-});
-
-composerEl.addEventListener("input", () => {
-  renderSlashPalette();
-});
-
 composerEl.addEventListener("keydown", (e: KeyboardEvent) => {
-  if (slashPaletteOpen()) {
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      slashIndex = (slashIndex + 1) % slashFiltered.length;
-      renderSlashPalette();
-      return;
-    }
-    if (e.key === "ArrowUp") {
-      e.preventDefault();
-      slashIndex = (slashIndex - 1 + slashFiltered.length) % slashFiltered.length;
-      renderSlashPalette();
-      return;
-    }
-    if (e.key === "Escape") {
-      e.preventDefault();
-      hideSlashPalette();
-      return;
-    }
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      const cmd = slashFiltered[slashIndex] ?? slashFiltered[0];
-      if (cmd) insertSlashCommand(cmd);
-      return;
-    }
-    if (e.key === "Tab") {
-      e.preventDefault();
-      const cmd = slashFiltered[slashIndex] ?? slashFiltered[0];
-      if (cmd) insertSlashCommand(cmd);
-      return;
-    }
-  }
+  const handled = slashPalette.handleKeydown(e);
+  if (handled) return;
 
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
@@ -1212,33 +617,46 @@ composerEl.addEventListener("keydown", (e: KeyboardEvent) => {
   }
 });
 
-onTranscriptChange(scheduleTranscriptPaint);
+onTranscriptChange(transcriptRenderer.schedulePaint);
 onChangesChange(renderChanges);
 onPlanTasksChange(renderTasks);
 onModelsChange(() => {
-  renderModelSelect(getAvailableModelsCache(), activeModelRef || modelSelectEl.value);
+  modelSelector.render(getAvailableModelsCache(), activeModelRef || modelSelectEl.value);
 });
 onCommandsChange(() => {
-  if (isSlashMode(composerEl.value)) renderSlashPalette();
+  if (composerEl.value.startsWith("/")) {
+    slashPalette.render();
+  }
 });
 
-// IDE sidebar (activity bar + Explorer / Source Control / Browser).
+// IDE sidebar
 const ide = initIde(() => settings.cwd);
 
-// Boot
+// Settings Panel Controller
+const settingsController = initSettingsPanel(
+  settingsPanel,
+  settingsToggle,
+  applySettingsBtn,
+  settingsFormElements,
+  async (newSettings) => {
+    settings = newSettings;
+    await doStart();
+    ide.refresh();
+  },
+);
+
+// --- Boot ------------------------------------------------------------------
+
 void (async () => {
-  applyTheme(loadTheme());
   settings = await loadSettings();
-  saveSettings(settings);
-  applySettingsToForm(settings);
+  settingsController.setSettings(settings);
   activeModelRef = settings.model;
   setWorkMode(loadUiMode());
-  // cwd is final now — reload the IDE tree under the real root.
   ide.refresh();
   await subscribeEvents(onRpcEvent);
   renderStatus();
   renderChanges();
   renderTasks();
-  updateEmptyChat();
+  transcriptRenderer.updateEmptyChat();
   await doStart();
 })();

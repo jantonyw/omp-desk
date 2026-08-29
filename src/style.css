@@ -1273,6 +1273,210 @@ body {
   margin-bottom: 2px;
 }
 
+/* --- Composer Bottom Bar & Model Popover (Image #2 layout) --- */
+.composer-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  min-height: 28px;
+  padding: 0 4px;
+  position: relative;
+}
+
+.composer-tools-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.composer-model-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-soft);
+  color: var(--fg-dim);
+  font: 12px/1.3 var(--sans);
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  max-width: 320px;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.composer-model-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--fg);
+  border-color: var(--border);
+}
+
+.composer-model-btn.open {
+  background: var(--bg-elev2);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.composer-model-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  opacity: 0.8;
+}
+
+.composer-model-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.composer-model-chevron {
+  flex: 0 0 auto;
+  opacity: 0.6;
+  transition: transform 0.15s ease;
+}
+
+.composer-model-btn.open .composer-model-chevron {
+  transform: rotate(180deg);
+}
+
+/* Floating Model Popover (Image #2) */
+.model-popover {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  width: 380px;
+  max-width: calc(100vw - 32px);
+  max-height: 380px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 12px 36px var(--shadow);
+  backdrop-filter: blur(16px);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: popoverFadeIn 0.12s ease-out;
+}
+
+@keyframes popoverFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.model-popover-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--bg);
+}
+
+.model-popover-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-mute);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.model-popover-refresh {
+  background: transparent;
+  border: none;
+  color: var(--fg-mute);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.model-popover-refresh:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.model-popover-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  overflow-y: auto;
+  max-height: 320px;
+}
+
+.model-popover-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+  padding: 8px 14px;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.1s ease;
+  border-radius: 0;
+}
+
+.model-popover-item:hover,
+.model-popover-item.highlighted {
+  background: var(--bg-hover);
+}
+
+.model-popover-item.active {
+  background: var(--accent-soft);
+}
+
+.model-popover-idx {
+  flex: 0 0 16px;
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--fg-mute);
+  padding-top: 2px;
+  text-align: center;
+}
+
+.model-popover-info {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.model-popover-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.model-popover-item.active .model-popover-name {
+  color: var(--accent);
+}
+
+.model-popover-desc {
+  font-size: 11.5px;
+  color: var(--fg-mute);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 /* --- Buttons --- */
 button {
   background: var(--bg-elev2);
