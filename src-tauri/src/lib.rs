@@ -10,10 +10,12 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod event_bridge;
 mod process;
 
 use std::sync::Arc;
 
+use event_bridge::EventOutbox;
 use process::{next_req_id, OmpProcess, RpcEvent, SessionSettings, SessionStatus};
 use serde::Serialize;
 use tauri::{Emitter, Manager, State};
@@ -21,7 +23,7 @@ use tauri::{Emitter, Manager, State};
 /// Shared handle to the single active omp session.
 struct Session {
     proc: tokio::sync::Mutex<Option<Arc<OmpProcess>>>,
-    emit: tokio::sync::mpsc::UnboundedSender<RpcEvent>,
+    emit: EventOutbox,
 }
 
 #[derive(Serialize)]
@@ -48,7 +50,6 @@ fn ack(ok: bool, id: Option<String>) -> serde_json::Value {
 #[tauri::command]
 async fn start_session(
     state: State<'_, Session>,
-    app: tauri::AppHandle,
     settings: SessionSettings,
 ) -> CmdResult {
     let proc = {
@@ -67,15 +68,13 @@ async fn start_session(
         }
     };
 
-    // Drain the ready frame / initial events into the event stream. The
-    // frontend listens on `rpc_event`; it reacts to `kind == "ready"` by
     let host = proc.host();
     let host = host.lock().await;
     let status = host.status();
     drop(host);
 
     let view = SessionStatusView::from_status(&status);
-    let _ = app.emit("rpc_event", RpcEvent {
+    state.emit.send(RpcEvent {
         kind: "status".into(),
         frame: Some(json(&status)),
         text: None,
@@ -250,16 +249,43 @@ fn open_url(url: String, app: tauri::AppHandle) -> CmdResult {
         .map_err(|e| e.to_string())
 }
 
+fn configure_webview_gpu(app: &tauri::App) {
+    // Prefer WebKit/WebView2 hardware compositing.
+    // GPU here means the embedded webview's compositor — not a wgpu/Vulkan scene.
+    if let Some(window) = app.get_webview_window("main") {
+        #[cfg(target_os = "linux")]
+        {
+            let _ = window.with_webview(|webview| {
+                use webkit2gtk::{HardwareAccelerationPolicy, SettingsExt, WebViewExt};
+                let wv = webview.inner();
+                if let Some(settings) = wv.settings() {
+                    settings.set_hardware_acceleration_policy(HardwareAccelerationPolicy::Always);
+                }
+            });
+        }
+        // macOS WKWebView uses GPU compositing by default; nothing to force-enable.
+        // Windows GPU hints are set via tauri.conf.json `additionalBrowserArgs`.
+        let _ = window;
+    }
+}
+
 pub fn run() {
+    // Clear software-compositing overrides before the webview is created.
+    // GPU = WebKit/WebView2 compositing, not a wgpu scene.
+    #[cfg(target_os = "linux")]
+    {
+        std::env::remove_var("WEBKIT_DISABLE_COMPOSITING_MODE");
+    }
+
     let mk = |app: &tauri::App| -> Result<Session, String> {
-        let (emit, rx) = tokio::sync::mpsc::unbounded_channel::<RpcEvent>();
-        // Forward every reader/writer event to the `rpc_event` channel.
+        let (emit, drain) = EventOutbox::new();
         let handle = app.handle().clone();
         tauri::async_runtime::spawn(async move {
-            let mut rx = rx;
-            while let Some(ev) = rx.recv().await {
-                let _ = handle.emit("rpc_event", &ev);
-            }
+            drain
+                .run(move |ev| {
+                    let _ = handle.emit("rpc_event", &ev);
+                })
+                .await;
         });
         Ok(Session {
             proc: tokio::sync::Mutex::new(None),
@@ -269,6 +295,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .setup(move |app| {
+            configure_webview_gpu(app);
             let session = mk(app)?;
             app.manage(session);
             Ok(())

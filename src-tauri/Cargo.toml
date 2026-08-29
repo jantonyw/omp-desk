@@ -18,7 +18,11 @@ tauri-plugin-shell = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
-tokio = { version = "1", features = ["io-util", "process", "sync", "rt", "macros"] }
+tokio = { version = "1", features = ["io-util", "process", "sync", "rt", "macros", "time"] }
+
+# Linux: WebKitGTK settings for hardware compositing (GPU is WebKit compositing, not wgpu).
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = { version = "2.0.2", features = ["v2_40"] }
 
 # Pin transitive deps that otherwise resolve to versions requiring rustc 1.88
 # (the toolchain here is 1.85). These are MSRV-safe older releases that satisfy
