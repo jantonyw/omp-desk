@@ -1,5 +1,7 @@
 # omp-desk
 
+[![CI](https://github.com/jantonyw/omp-desk/actions/workflows/ci.yml/badge.svg)](https://github.com/jantonyw/omp-desk/actions)
+
 A Tauri 2 desktop shell around the [`omp`](https://github.com/oh-my-pi/oh-my-pi) coding agent.
 
 omp-desk is only **UI + process management**. It spawns `omp --mode rpc-ui` and speaks its
@@ -10,13 +12,18 @@ model client all live inside `omp` — none of that is reimplemented here.
 
 ## Screenshot / UI
 
-Dark, dense Codex-like three-pane studio (default **1200×760**, usable at 1280×800; composer always visible):
+Chat-first three-pane studio (default **1200×760**; composer always reachable):
 
-- **Left** — session status, cwd, New / Stop
-- **Center** — transcript + composer
-- **Right** — Changes (from tool events), plan Tasks, Run / Abort
+- **Left** — session row (status, cwd), New chat / Stop
+- **Center** — Plan/Execute **underline tabs**, welcome or markdown transcript, composer
+- **Right** — Changes (from tool events), plan Tasks, Confirm execute, Run actions
 
-Top bar: **Plan / Execute** toggle and a **bound-model dropdown** (`get_available_models` / `set_model`).
+Top bar: **model chips/tabs** from `get_available_models` / `set_model` (dropdown fallback),
+and a **theme** control: Dark / Midnight / Light / System.
+
+Composer: type **`/`** for a filterable slash-command palette (`get_available_commands`).
+Assistant turns render as **markdown**. Long sessions keep **memory caps** (transcript ≈200
+user/assistant/tool entries; Changes ≈100) so the WebView does not grow without bound.
 
 ## Requirements
 
@@ -56,10 +63,13 @@ bun run build          # frontend only (tsc + vite)
 cd src-tauri && cargo check
 ```
 
+CI ([Actions](https://github.com/jantonyw/omp-desk/actions)) runs `bun run build` and
+`cargo check` — not a full Tauri bundle.
+
 ## Models
 
 After the session is **ready**, the shell calls real RPC `get_available_models` and fills the
-dropdown. Picking a model sends `set_model` with `{ provider, modelId }`. An empty selection
+model chips. Picking a model sends `set_model` with `{ provider, modelId }`. An empty selection
 means **omit `--model` on spawn** so `omp` uses `~/.omp` / agent config. Do not paste API keys
 into omp-desk.
 
@@ -68,9 +78,17 @@ into omp-desk.
 - **Plan** — prompts are sent with a read-only planning instruction; steps are parsed into the
   right-hand Tasks list. omp CLI also exposes `--plan <model>` (plan model) and `--plan-yolo`
   (headless plan→auto-approve→execute); pass those via Settings → extra args if you need them.
-  There is no inventable RPC `plan_mode` command — see `rpc-types.ts`.
+  There is no inventable RPC `plan_mode` command — see `src/protocol.ts`.
 - **Execute** — use **Confirm execute** (or send while in Execute mode) after a plan exists;
   the shell asks for confirmation, then sends a follow-up via `prompt` / `abort_and_prompt`.
+
+## Contributing & security
+
+- [CONTRIBUTING.md](CONTRIBUTING.md) — bun, shell-only rules, PR expectations
+- [SECURITY.md](SECURITY.md) — credentials live in omp/`~/.omp`; how to report vulns
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+
+OpenSpec plans live under `openspec/` (optional for small docs-only PRs).
 
 ## A note on the Rust toolchain
 
