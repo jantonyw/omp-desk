@@ -13,6 +13,10 @@ export interface BoundModel {
   api?: string;
   baseUrl?: string;
   reasoning?: boolean;
+  /** Optional role labels if present on the wire (default/smol/slow/plan). */
+  role?: string;
+  roles?: string[];
+  tags?: string[];
 }
 
 /** Command shapes (stdin). Mirror of rpc-types.ts `RpcCommand` (subset we use). */
@@ -25,12 +29,39 @@ export type RpcCommand =
   | { id?: string; type: "abort_and_prompt"; message: string; images?: ImageContent[] }
   | { id?: string; type: "new_session"; parentSession?: string }
   | { id?: string; type: "get_state" }
+  | { id?: string; type: "get_available_commands" }
   | { id?: string; type: "set_model"; provider: string; modelId: string }
   | { id?: string; type: "cycle_model" }
   | { id?: string; type: "get_available_models" }
   | { id?: string; type: "set_todos"; phases: TodoPhase[] }
   | { id?: string; type: "get_messages" }
   | { id?: string; type: "get_messages_page"; cursor?: string; limit?: number };
+
+/** Source of a slash command from omp available-commands (rpc-types.ts). */
+export type AvailableSlashCommandSource =
+  | "builtin"
+  | "skill"
+  | "extension"
+  | "custom"
+  | "mcp_prompt"
+  | "file"
+  | string;
+
+/** Slash command entry from `get_available_commands` / `available_commands_update`. */
+export interface RpcAvailableSlashCommand {
+  name: string;
+  aliases?: string[];
+  description?: string;
+  input?: { hint?: string };
+  subcommands?: Array<{ name: string; description?: string; usage?: string }>;
+  source: AvailableSlashCommandSource;
+}
+
+/** Unsolicited stdout frame listing slash commands. */
+export interface RpcAvailableCommandsUpdateFrame {
+  type: "available_commands_update";
+  commands: RpcAvailableSlashCommand[];
+}
 
 export interface TodoPhase {
   name?: string;
