@@ -336,6 +336,42 @@ export async function openUrl(url: string): Promise<void> {
   await invoke("open_url", { url });
 }
 
+export interface SessionHistoryEntry {
+  id: string;
+  title: string;
+  timestamp: string;
+  cwd: string;
+  file_path: string;
+  modified: number;
+}
+
+export interface SessionMessageEntry {
+  role: string;
+  text: string;
+  timestamp?: string;
+}
+
+export interface WorkspaceGroup {
+  id: string;
+  name: string;
+  path: string;
+  session_count: number;
+  latest_time: number;
+  sessions: SessionHistoryEntry[];
+}
+
+export async function fetchSessionHistory(cwd?: string): Promise<SessionHistoryEntry[]> {
+  return invoke<SessionHistoryEntry[]>("list_session_history", { cwd: cwd || null });
+}
+
+export async function fetchWorkspaceGroups(): Promise<WorkspaceGroup[]> {
+  return invoke<WorkspaceGroup[]>("list_workspace_groups");
+}
+
+export async function fetchSessionTranscript(filePath: string): Promise<SessionMessageEntry[]> {
+  return invoke<SessionMessageEntry[]>("read_session_transcript", { filePath });
+}
+
 function parseExtraArgs(raw: string): string[] {
   const out: string[] = [];
   const re = /"([^"]*)"|'([^']*)'|(\S+)/g;

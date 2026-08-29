@@ -2,16 +2,17 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   getStatus,
   startSession,
-  stopSession,
   sendPrompt,
   abort,
   getEntries,
+  clearTranscript,
   onTranscriptChange,
   getChangedFiles,
   clearChangedFiles,
   onChangesChange,
   getPlanTasks,
   setPlanTasks,
+  clearPlanTasks,
   togglePlanTask,
   onPlanTasksChange,
   getAvailableModelsCache,
@@ -21,6 +22,8 @@ import {
   fetchAvailableModels,
   fetchAvailableCommands,
   fetchSessionState,
+  fetchWorkspaceGroups,
+  fetchSessionTranscript,
   promptOrAbortAndPrompt,
   getLastAssistantText,
   parsePlanSteps,
@@ -35,6 +38,8 @@ import {
   type TranscriptEntry,
   type ChangedFile,
   type PlanTask,
+  type WorkspaceGroup,
+  type SessionHistoryEntry,
 } from "./client";
 import type { BoundModel, RpcAvailableSlashCommand, RpcEventPayload } from "./protocol";
 import { loadTheme, saveTheme, applyTheme, type ThemeId } from "./theme";
@@ -90,6 +95,8 @@ export function App(): React.ReactElement {
   const [changes, setChanges] = useState<ChangedFile[]>([]);
   const [tasks, setTasks] = useState<PlanTask[]>([]);
   const [models, setModels] = useState<BoundModel[]>([]);
+  const [workspaceGroups, setWorkspaceGroups] = useState<WorkspaceGroup[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string>("");
 
   // Slash commands state
   const [slashOpen, setSlashOpen] = useState<boolean>(false);
@@ -110,6 +117,15 @@ export function App(): React.ReactElement {
     }));
   }, []);
 
+  const loadWorkspaces = useCallback(async () => {
+    try {
+      const groups = await fetchWorkspaceGroups();
+      setWorkspaceGroups(groups);
+    } catch {
+      // Ignore if session directory not ready
+    }
+  }, []);
+
   const refreshMessageCount = useCallback(async () => {
     try {
       await fetchSessionState();
@@ -123,6 +139,9 @@ export function App(): React.ReactElement {
           st.model?.includes("/") ? st.model : prev || st.model || ""
         );
       }
+      if (st.session_id) {
+        setActiveSessionId(st.session_id);
+      }
     } catch {
       // get_state may fail mid-exit
     }
@@ -134,6 +153,7 @@ export function App(): React.ReactElement {
       const st = await getStatus();
       setStatus(st);
       if (st.model) setActiveModelRef(st.model);
+      if (st.session_id) setActiveSessionId(st.session_id);
       if (settings.model) {
         const match = availModels.find((m) => formatModelRef(m) === settings.model);
         if (match && activeModelRef !== settings.model) {
@@ -154,7 +174,8 @@ export function App(): React.ReactElement {
       appendSystem(`[commands] ${String(err)}`);
     }
     await refreshMessageCount();
-  }, [settings.model, activeModelRef, appendSystem, refreshMessageCount]);
+    void loadWorkspaces();
+  }, [settings.model, activeModelRef, appendSystem, refreshMessageCount, loadWorkspaces]);
 
   const capturePlanFromTranscript = useCallback(() => {
     const text = getLastAssistantText();
@@ -175,6 +196,7 @@ export function App(): React.ReactElement {
         void getStatus().then((s) => {
           setStatus(s);
           if (s.model) setActiveModelRef(s.model);
+          if (s.session_id) setActiveSessionId(s.session_id);
         });
         void onReadyLoadModels();
       }
@@ -196,6 +218,7 @@ export function App(): React.ReactElement {
           void getStatus().then((s) => {
             setStatus(s);
             if (s.model) setActiveModelRef(s.model.includes("/") ? s.model : s.model || "");
+            if (s.session_id) setActiveSessionId(s.session_id);
             if (f.command === "set_model" && f.success && f.data) {
               const m = f.data as BoundModel;
               const ref = formatModelRef(m);
@@ -209,6 +232,7 @@ export function App(): React.ReactElement {
         const f = ev.frame as { type?: string } | undefined;
         if (f?.type === "agent_end") {
           void refreshMessageCount();
+          void loadWorkspaces();
           if (workMode === "plan") {
             queueMicrotask(() => capturePlanFromTranscript());
           }
@@ -223,7 +247,7 @@ export function App(): React.ReactElement {
         }
       }
     },
-    [onReadyLoadModels, refreshMessageCount, workMode, capturePlanFromTranscript]
+    [onReadyLoadModels, refreshMessageCount, loadWorkspaces, workMode, capturePlanFromTranscript]
   );
 
   const doStart = useCallback(
@@ -232,16 +256,21 @@ export function App(): React.ReactElement {
       setActiveModelRef(s.model);
       setLastPlanText("");
       setSlashOpen(false);
+      clearTranscript();
+      clearChangedFiles();
+      clearPlanTasks();
       try {
         const st = await startSession(s);
         setStatus(st);
+        if (st.session_id) setActiveSessionId(st.session_id);
       } catch (err) {
         appendSystem(`[start failed] ${String(err)}`);
         const fallback = await getStatus().catch(() => status);
         setStatus({ ...fallback, started: false });
       }
+      void loadWorkspaces();
     },
-    [settings, appendSystem, status]
+    [settings, appendSystem, status, loadWorkspaces]
   );
 
   // Initialize
@@ -302,6 +331,21 @@ export function App(): React.ReactElement {
     await doStart(newSettings);
   };
 
+  const handleSelectWorkspace = async (newPath: string) => {
+    if (!newPath || newPath === settings.cwd) return;
+    const nextSettings = { ...settings, cwd: newPath };
+    setSettings(nextSettings);
+    saveSettings(nextSettings);
+    await doStart(nextSettings);
+  };
+
+  const handleAddWorkspace = () => {
+    const input = window.prompt("请输入新工作区的绝对路径 (Absolute folder path):", settings.cwd);
+    if (input && input.trim()) {
+      void handleSelectWorkspace(input.trim());
+    }
+  };
+
   const handleSelectModel = async (ref: string, provider?: string, modelId?: string) => {
     if (!status.ready || selectingModel) return;
 
@@ -337,6 +381,30 @@ export function App(): React.ReactElement {
     } finally {
       setSelectingModel(false);
     }
+  };
+
+  const handleSelectSession = async (sessionItem: SessionHistoryEntry) => {
+    try {
+      setActiveSessionId(sessionItem.id);
+      const rawMessages = await fetchSessionTranscript(sessionItem.file_path);
+      const transcriptMessages: TranscriptEntry[] = rawMessages.map((m, idx) => ({
+        id: `hist-${sessionItem.id}-${idx}`,
+        role: m.role === "user" ? "user" : "assistant",
+        text: m.text,
+      }));
+      setEntries(transcriptMessages);
+    } catch (err) {
+      appendSystem(`[load history failed] ${String(err)}`);
+    }
+  };
+
+  const handleInsertFileReference = (filePath: string) => {
+    const relativePath = filePath.startsWith(settings.cwd)
+      ? filePath.slice(settings.cwd.length).replace(/^[/\\]/, "")
+      : filePath;
+    const addition = `@${relativePath} `;
+    setComposerText((prev) => (prev ? `${prev} ${addition}` : addition));
+    composerRef.current?.focus();
   };
 
   const handleSend = () => {
@@ -548,19 +616,20 @@ export function App(): React.ReactElement {
           workspaceRoot={settings.cwd}
           onSelectView={setActiveView}
           onToggleSide={() => setSideOpen((prev) => !prev)}
+          onInsertFileReference={handleInsertFileReference}
         />
 
         <SessionsPane
           status={status}
           cwd={settings.cwd}
-          activeModelRef={activeModelRef}
+          activeSessionId={activeSessionId}
+          workspaceGroups={workspaceGroups}
           onNewSession={() => void doStart()}
-          onStopSession={() =>
-            void stopSession().then(async () => {
-              const st = await getStatus();
-              setStatus(st);
-            })
-          }
+          onSelectWorkspace={handleSelectWorkspace}
+          onSelectSession={handleSelectSession}
+          onRefreshWorkspaces={loadWorkspaces}
+          onOpenSettings={() => setSettingsOpen(true)}
+          onAddWorkspace={handleAddWorkspace}
         />
 
         <ChatPane
@@ -576,6 +645,8 @@ export function App(): React.ReactElement {
           slashOpen={slashOpen}
           slashIndex={slashIndex}
           slashFiltered={slashFiltered}
+          currentCwd={settings.cwd}
+          workspaceGroups={workspaceGroups}
           composerRef={composerRef}
           transcriptRef={transcriptRef}
           onSetWorkMode={setWorkMode}
@@ -587,6 +658,8 @@ export function App(): React.ReactElement {
           onAbort={() => void abort()}
           onSelectModel={handleSelectModel}
           onRefreshModels={onReadyLoadModels}
+          onSelectWorkspace={handleSelectWorkspace}
+          onAddWorkspace={handleAddWorkspace}
         />
 
         <InspectorPane

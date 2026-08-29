@@ -49,6 +49,7 @@ interface IdeSidePanelProps {
   workspaceRoot: string;
   onSelectView: (view: ViewId) => void;
   onToggleSide: () => void;
+  onInsertFileReference?: (path: string) => void;
 }
 
 export function IdeSidePanel({
@@ -57,6 +58,7 @@ export function IdeSidePanel({
   workspaceRoot,
   onSelectView,
   onToggleSide,
+  onInsertFileReference,
 }: IdeSidePanelProps): React.ReactElement {
   // Explorer state
   const [tree, setTree] = useState<FsEntry[]>([]);
@@ -392,7 +394,7 @@ export function IdeSidePanel({
           </ul>
           <div className="editor-pane">
             <div className="editor-head">
-              <span id="editor-filename" className="editor-filename">
+              <span id="editor-filename" className="editor-filename" title={openFile || ""}>
                 {openFile ? openFile.split(/[/\\]/).pop() : ""}
               </span>
               <span
@@ -403,15 +405,27 @@ export function IdeSidePanel({
               >
                 *
               </span>
-              <button
-                id="editor-save"
-                type="button"
-                className="linkish"
-                disabled={!isDirty}
-                onClick={handleSaveFile}
-              >
-                Save
-              </button>
+              <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                {openFile && onInsertFileReference && (
+                  <button
+                    type="button"
+                    className="linkish"
+                    title="Insert @file into chat composer"
+                    onClick={() => onInsertFileReference(openFile)}
+                  >
+                    + 引用到对话
+                  </button>
+                )}
+                <button
+                  id="editor-save"
+                  type="button"
+                  className="linkish"
+                  disabled={!isDirty}
+                  onClick={handleSaveFile}
+                >
+                  Save
+                </button>
+              </div>
             </div>
             <textarea
               id="editor"

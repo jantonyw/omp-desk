@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
-import type { TranscriptEntry } from "../client";
+import type { TranscriptEntry, WorkspaceGroup } from "../client";
 import type { BoundModel, RpcAvailableSlashCommand } from "../protocol";
 import { formatModelRef } from "../protocol";
 
@@ -65,6 +65,8 @@ interface ChatPaneProps {
   slashOpen: boolean;
   slashIndex: number;
   slashFiltered: RpcAvailableSlashCommand[];
+  currentCwd: string;
+  workspaceGroups: WorkspaceGroup[];
   composerRef: React.RefObject<HTMLTextAreaElement>;
   transcriptRef: React.RefObject<HTMLElement>;
   onSetWorkMode: (mode: "plan" | "execute") => void;
@@ -76,6 +78,8 @@ interface ChatPaneProps {
   onAbort: () => void;
   onSelectModel: (ref: string, provider?: string, modelId?: string) => void;
   onRefreshModels: () => void;
+  onSelectWorkspace: (path: string) => void;
+  onAddWorkspace: () => void;
 }
 
 export function ChatPane({
@@ -91,6 +95,8 @@ export function ChatPane({
   slashOpen,
   slashIndex,
   slashFiltered,
+  currentCwd,
+  workspaceGroups,
   composerRef,
   transcriptRef,
   onSetWorkMode,
@@ -102,12 +108,26 @@ export function ChatPane({
   onAbort,
   onSelectModel,
   onRefreshModels,
+  onSelectWorkspace,
+  onAddWorkspace,
 }: ChatPaneProps): React.ReactElement {
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [wsPickerOpen, setWsPickerOpen] = useState(false);
+
   const popoverRef = useRef<HTMLDivElement>(null);
   const modelBtnRef = useRef<HTMLButtonElement>(null);
+  const wsSwitcherRef = useRef<HTMLDivElement>(null);
 
   const emptyChat = !entries.some((e) => e.role === "user" || e.role === "assistant");
+
+  // Get current workspace name
+  const currentWorkspaceName = useMemo(() => {
+    const found = workspaceGroups.find(
+      (g) => g.path === currentCwd || currentCwd.startsWith(g.path)
+    );
+    if (found) return found.name;
+    return currentCwd.split(/[/\\]/).pop() || "工作区";
+  }, [workspaceGroups, currentCwd]);
 
   useEffect(() => {
     if (transcriptRef.current) {
@@ -115,12 +135,12 @@ export function ChatPane({
     }
   }, [entries]);
 
-  // Click outside to close model popover
+  // Click outside to close popovers
   useEffect(() => {
-    if (!modelPickerOpen) return;
     const handleClickOutside = (e: MouseEvent) => {
       const target = e.target as Node | null;
       if (
+        modelPickerOpen &&
         popoverRef.current &&
         !popoverRef.current.contains(target) &&
         modelBtnRef.current &&
@@ -128,10 +148,17 @@ export function ChatPane({
       ) {
         setModelPickerOpen(false);
       }
+      if (
+        wsPickerOpen &&
+        wsSwitcherRef.current &&
+        !wsSwitcherRef.current.contains(target)
+      ) {
+        setWsPickerOpen(false);
+      }
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [modelPickerOpen]);
+  }, [modelPickerOpen, wsPickerOpen]);
 
   return (
     <section
@@ -139,25 +166,99 @@ export function ChatPane({
       className={emptyChat ? "empty-chat" : ""}
       aria-label="Chat"
     >
-      <nav className="mode-tabs" aria-label="Work mode">
-        <button
-          type="button"
-          id="mode-plan"
-          className={`mode-tab ${workMode === "plan" ? "active" : ""}`}
-          aria-pressed={workMode === "plan"}
-          onClick={() => onSetWorkMode("plan")}
-        >
-          Plan
-        </button>
-        <button
-          type="button"
-          id="mode-execute"
-          className={`mode-tab ${workMode === "execute" ? "active" : ""}`}
-          aria-pressed={workMode === "execute"}
-          onClick={() => onSetWorkMode("execute")}
-        >
-          Execute
-        </button>
+      <nav
+        className="mode-tabs"
+        aria-label="Work mode"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          paddingRight: "16px",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+          <button
+            type="button"
+            id="mode-plan"
+            className={`mode-tab ${workMode === "plan" ? "active" : ""}`}
+            aria-pressed={workMode === "plan"}
+            onClick={() => onSetWorkMode("plan")}
+          >
+            Plan
+          </button>
+          <button
+            type="button"
+            id="mode-execute"
+            className={`mode-tab ${workMode === "execute" ? "active" : ""}`}
+            aria-pressed={workMode === "execute"}
+            onClick={() => onSetWorkMode("execute")}
+          >
+            Execute
+          </button>
+        </div>
+
+        {/* Workspace Switcher Pill & Popover (Image #1 layout) */}
+        <div className="workspace-switcher-wrap" ref={wsSwitcherRef}>
+          <button
+            type="button"
+            className={`workspace-switcher-btn ${wsPickerOpen ? "open" : ""}`}
+            onClick={() => setWsPickerOpen((v) => !v)}
+            title="切换当前工作区"
+          >
+            <span aria-hidden="true">📁</span>
+            <span>{currentWorkspaceName}</span>
+            <span style={{ fontSize: "10px", opacity: 0.6 }}>▾</span>
+          </button>
+
+          {wsPickerOpen && (
+            <div className="workspace-popover">
+              <ul className="workspace-popover-list">
+                {workspaceGroups.map((g) => {
+                  const isActive =
+                    g.path === currentCwd ||
+                    currentCwd.startsWith(g.path) ||
+                    g.path.startsWith(currentCwd);
+                  return (
+                    <li key={g.id}>
+                      <button
+                        type="button"
+                        className={`workspace-popover-item ${
+                          isActive ? "active" : ""
+                        }`}
+                        onClick={() => {
+                          onSelectWorkspace(g.path);
+                          setWsPickerOpen(false);
+                        }}
+                      >
+                        <div className="workspace-popover-item-main">
+                          <span aria-hidden="true">📁</span>
+                          <span className="workspace-popover-item-name">
+                            {g.name}
+                          </span>
+                        </div>
+                        {isActive && (
+                          <span className="workspace-popover-check">✓</span>
+                        )}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+              <div className="workspace-popover-divider" />
+              <button
+                type="button"
+                className="workspace-popover-add"
+                onClick={() => {
+                  onAddWorkspace();
+                  setWsPickerOpen(false);
+                }}
+              >
+                <span>+</span>
+                <span>添加工作区...</span>
+              </button>
+            </div>
+          )}
+        </div>
       </nav>
 
       <div id="chat-stage">

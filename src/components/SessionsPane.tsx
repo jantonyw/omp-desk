@@ -1,85 +1,259 @@
-import React from "react";
-import type { Status } from "../client";
+import React, { useState, useMemo } from "react";
+import type { Status, WorkspaceGroup, SessionHistoryEntry } from "../client";
 
 interface SessionsPaneProps {
   status: Status;
   cwd: string;
-  activeModelRef: string;
+  activeSessionId?: string;
+  workspaceGroups: WorkspaceGroup[];
   onNewSession: () => void;
-  onStopSession: () => void;
+  onSelectWorkspace: (path: string) => void;
+  onSelectSession: (session: SessionHistoryEntry) => void;
+  onRefreshWorkspaces: () => void;
+  onOpenSettings: () => void;
+  onAddWorkspace: () => void;
+}
+
+function formatRelativeDays(timestamp: string | number): string {
+  if (!timestamp) return "";
+  try {
+    const d = new Date(timestamp);
+    if (isNaN(d.getTime())) return "";
+    const now = Date.now();
+    const diffSec = Math.floor((now - d.getTime()) / 1000);
+    if (diffSec < 60) return "刚刚";
+    if (diffSec < 3600) return `${Math.floor(diffSec / 60)}分钟`;
+    if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}小时`;
+    const days = Math.floor(diffSec / 86400);
+    return `${days}天`;
+  } catch {
+    return "";
+  }
 }
 
 export function SessionsPane({
-  status,
   cwd,
-  activeModelRef,
+  activeSessionId,
+  workspaceGroups,
   onNewSession,
-  onStopSession,
+  onSelectWorkspace,
+  onSelectSession,
+  onRefreshWorkspaces,
+  onOpenSettings,
+  onAddWorkspace,
 }: SessionsPaneProps): React.ReactElement {
-  let stateLabel = "starting…";
-  if (!status.started) {
-    stateLabel = "not started";
-  } else if (!status.running) {
-    stateLabel = status.exited ? "exited" : "stopped";
-  } else if (status.is_streaming) {
-    stateLabel = "streaming";
-  } else if (status.ready) {
-    stateLabel = "ready";
-  }
+  const [searchQuery, setSearchQuery] = useState("");
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const [expandedSessionsMap, setExpandedSessionsMap] = useState<Record<string, boolean>>({});
 
-  const fullModel = activeModelRef || status.model || "omp default";
-  const tipParts = [fullModel];
-  if (status.pid != null) tipParts.push(`pid ${status.pid}`);
-  const metaTip = tipParts.join(" · ");
+  // Determine current active group by matching cwd
+  const activeGroup = useMemo(() => {
+    return workspaceGroups.find(
+      (g) => g.path === cwd || cwd.startsWith(g.path) || g.path.startsWith(cwd)
+    );
+  }, [workspaceGroups, cwd]);
+
+  // Filter groups and sessions based on search query
+  const filteredGroups = useMemo(() => {
+    if (!searchQuery.trim()) return workspaceGroups;
+    const q = searchQuery.toLowerCase();
+    return workspaceGroups
+      .map((g) => {
+        const matchesGroupName = g.name.toLowerCase().includes(q);
+        const filteredSessions = g.sessions.filter((s) =>
+          s.title.toLowerCase().includes(q)
+        );
+        if (matchesGroupName || filteredSessions.length > 0) {
+          return {
+            ...g,
+            sessions: matchesGroupName ? g.sessions : filteredSessions,
+          };
+        }
+        return null;
+      })
+      .filter((g): g is WorkspaceGroup => g !== null);
+  }, [workspaceGroups, searchQuery]);
+
+  const toggleGroup = (groupId: string) => {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return next;
+    });
+  };
+
+  const toggleExpandSessions = (groupId: string) => {
+    setExpandedSessionsMap((prev) => ({
+      ...prev,
+      [groupId]: !prev[groupId],
+    }));
+  };
 
   return (
     <aside id="pane-sessions" aria-label="Sessions">
-      <div className="pane-title">Sessions</div>
-      <button
-        id="new-session"
-        type="button"
-        className="new-chat-btn"
-        onClick={onNewSession}
-      >
-        New chat
-      </button>
-      <div
-        id="session-card"
-        className="session-row-card"
-        role="list"
-        title={metaTip}
-      >
-        <div className="boop-row session-boop" role="listitem">
-          <span className="boop-source" aria-hidden="true"></span>
-          <div className="boop-main">
-            <div className="boop-title-row">
-              <span className="boop-title">Current session</span>
-              <span
-                id="session-state"
-                className="status-pill"
-                data-state={stateLabel}
-              >
-                {stateLabel}
-              </span>
-            </div>
-            <div id="session-cwd" className="boop-desc" title={cwd}>
-              {cwd || "—"}
-            </div>
-            <div id="session-meta" className="boop-meta" title={metaTip}>
-              {fullModel}
-            </div>
+      <div className="workspace-sidebar">
+        {/* Search Bar */}
+        <div className="workspace-search-wrap">
+          <span className="workspace-search-icon" aria-hidden="true">
+            🔍
+          </span>
+          <input
+            type="text"
+            className="workspace-search-input"
+            placeholder="搜索会话..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+          />
+        </div>
+
+        {/* Workspace Header */}
+        <div className="workspace-header">
+          <div className="workspace-header-title">工作区</div>
+          <div className="workspace-header-actions">
+            <button
+              type="button"
+              className="workspace-action-icon"
+              title="刷新工作区"
+              onClick={onRefreshWorkspaces}
+            >
+              ↻
+            </button>
+            <button
+              type="button"
+              className="workspace-action-icon"
+              title="添加工作区..."
+              onClick={onAddWorkspace}
+            >
+              +
+            </button>
           </div>
         </div>
-      </div>
-      <div className="pane-actions">
-        <button
-          id="stop-session"
-          type="button"
-          className="ghost-btn"
-          onClick={onStopSession}
-        >
-          Stop
-        </button>
+
+        {/* Workspace Groups List */}
+        <ul className="workspace-tree">
+          {filteredGroups.length === 0 ? (
+            <li className="empty-hint">暂无工作区记录</li>
+          ) : (
+            filteredGroups.map((group) => {
+              const isCurrentActive = activeGroup?.id === group.id;
+              // Active group defaults to open, otherwise follows expandedGroups state
+              const isOpen =
+                searchQuery.trim() !== "" ||
+                isCurrentActive ||
+                expandedGroups.has(group.id);
+              const isShowingAll = Boolean(expandedSessionsMap[group.id]);
+              const visibleSessions = isShowingAll
+                ? group.sessions
+                : group.sessions.slice(0, 4);
+              const remainingCount = group.sessions.length - visibleSessions.length;
+
+              return (
+                <li key={group.id} className="workspace-group">
+                  <div
+                    className={`workspace-group-header ${
+                      isCurrentActive ? "active" : ""
+                    }`}
+                    onClick={() => {
+                      if (!isCurrentActive) {
+                        onSelectWorkspace(group.path);
+                      }
+                      toggleGroup(group.id);
+                    }}
+                  >
+                    <span className="workspace-folder-icon" aria-hidden="true">
+                      📁
+                    </span>
+                    <span className="workspace-group-name" title={group.path}>
+                      {group.name}
+                    </span>
+                  </div>
+
+                  {isOpen && (
+                    <div className="workspace-sessions-list">
+                      {isCurrentActive && (
+                        <button
+                          type="button"
+                          className="workspace-new-chat-btn"
+                          onClick={onNewSession}
+                        >
+                          新会话
+                        </button>
+                      )}
+
+                      {group.sessions.length === 0 ? (
+                        <div className="empty-hint" style={{ padding: "4px 8px" }}>
+                          暂无会话
+                        </div>
+                      ) : (
+                        visibleSessions.map((s) => {
+                          const isActiveSession = activeSessionId === s.id;
+                          const relativeTime = formatRelativeDays(
+                            s.timestamp || s.modified * 1000
+                          );
+                          return (
+                            <button
+                              key={s.id}
+                              type="button"
+                              className={`workspace-session-row ${
+                                isActiveSession ? "active" : ""
+                              }`}
+                              onClick={() => onSelectSession(s)}
+                            >
+                              <span
+                                className="workspace-session-title"
+                                title={s.title}
+                              >
+                                {s.title}
+                              </span>
+                              {relativeTime && (
+                                <span className="workspace-session-time">
+                                  {relativeTime}
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })
+                      )}
+
+                      {remainingCount > 0 && !isShowingAll && (
+                        <button
+                          type="button"
+                          className="workspace-expand-btn"
+                          onClick={() => toggleExpandSessions(group.id)}
+                        >
+                          展开其余 {remainingCount} 个会话
+                        </button>
+                      )}
+
+                      {isShowingAll && group.sessions.length > 4 && (
+                        <button
+                          type="button"
+                          className="workspace-expand-btn"
+                          onClick={() => toggleExpandSessions(group.id)}
+                        >
+                          收起会话
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </li>
+              );
+            })
+          )}
+        </ul>
+
+        {/* Bottom Settings Button */}
+        <div className="workspace-bottom-settings">
+          <button
+            type="button"
+            className="workspace-settings-btn"
+            onClick={onOpenSettings}
+          >
+            <span aria-hidden="true">⚙</span>
+            <span>设置</span>
+          </button>
+        </div>
       </div>
     </aside>
   );
