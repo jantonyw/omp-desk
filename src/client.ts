@@ -54,18 +54,33 @@ export interface TranscriptEntry {
 let entries: TranscriptEntry[] = [];
 let listeners: Array<() => void> = [];
 let seq = 0;
+/** Text of the last user message already rendered, to dedupe omp's echo. */
+let lastUserText: string | null = null;
 export function getEntries(): TranscriptEntry[] {
   return entries;
 }
 
 export function clearTranscript(): void {
   entries = [];
+  lastUserText = null;
   emit();
 }
 
 export function appendUser(text: string): void {
   entries.push({ id: `u${seq++}`, role: "user", text });
+  lastUserText = text;
   emit();
+}
+
+/**
+ * omp's rpc-ui protocol echoes a user message as *both* `message_start` and
+ * `message_end`; together with the optimistic local append in `onSend` that
+ * used to render three copies of one message. Render the echo only when it
+ * differs from the last user message already shown.
+ */
+function echoUser(text: string): void {
+  if (!text || text === lastUserText) return;
+  appendUser(text);
 }
 
 function emit(): void {
@@ -220,8 +235,7 @@ export function handleEvent(ev: RpcEventPayload): void {
       if (ty === "message_start") {
         const msg = f?.message as AgentMessage | undefined;
         if (msg?.role === "user") {
-          const text = extractText(msg);
-          if (text) appendUser(text);
+          echoUser(extractText(msg));
         }
       } else if (ty === "message_update") {
         handleMessageUpdate(f as Record<string, unknown>);
@@ -230,8 +244,7 @@ export function handleEvent(ev: RpcEventPayload): void {
         if (msg?.role === "assistant") {
           finalizeAssistant(msg);
         } else if (msg?.role === "user") {
-          const text = extractText(msg);
-          if (text) appendUser(text);
+          echoUser(extractText(msg));
         }
       } else if (ty === "tool_execution_start") {
         const toolName = String(f?.toolName ?? "tool");

@@ -6,6 +6,7 @@
 //! one JSON object per line; after negotiating v2, oversized frames arrive as
 //! base64 `rpc_chunk` sequences that we reassemble and validate in order.
 
+use std::path::Path;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -146,6 +147,20 @@ struct Status {
     omp_path: String,
 }
 
+/// True if `program` resolves to an executable: absolute/relative paths are
+/// checked directly, bare names are looked up along `$PATH` the same way
+/// `Command::spawn` would.
+fn command_exists(program: &str) -> bool {
+    if program.contains('/') {
+        return Path::new(program).is_file();
+    }
+    std::env::var_os("PATH")
+        .map(|paths| {
+            std::env::split_paths(&paths).any(|dir| dir.join(program).is_file())
+        })
+        .unwrap_or(false)
+}
+
 impl OmpProcess {
     /// Spawn `omp` and wire reader tasks for stdout/stderr plus a writer task
     /// for stdin. Emitted events are pushed onto `emit`.
@@ -155,6 +170,18 @@ impl OmpProcess {
     ) -> Result<Arc<OmpProcess>, String> {
         if settings.cwd.is_empty() {
             return Err("cwd is empty".to_string());
+        }
+        // Preflight with precise errors: a missing cwd yields the same ENOENT
+        // as a missing binary, which is confusing to debug. Check both before
+        // spawning so the message names the actual problem.
+        if !Path::new(&settings.cwd).is_dir() {
+            return Err(format!("cwd does not exist: {}", settings.cwd));
+        }
+        if !command_exists(&settings.omp_path) {
+            return Err(format!(
+                "omp binary not found: {} (set its absolute path in settings)",
+                settings.omp_path
+            ));
         }
         let mut cmd = Command::new(&settings.omp_path);
         cmd.arg("--mode").arg("rpc-ui");

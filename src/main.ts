@@ -12,6 +12,7 @@ import {
   type Settings,
   type Status,
 } from "./client";
+import { homeDir } from "@tauri-apps/api/path";
 import type { RpcEventPayload } from "./protocol";
 
 // --- DOM -------------------------------------------------------------------
@@ -48,11 +49,22 @@ let status: Status = {
 
 const SETTINGS_KEY = "omp-desk.settings";
 
+/// `/workspace` is the omp container convention; on macOS/Windows desktops it
+/// almost never exists. Resolve the user's home once at startup so the app
+/// works out of the box. Falls back to the convention when the Tauri path API
+/// is unavailable (e.g. plain-browser preview).
+const homeCwdPromise: Promise<string> = homeDir().catch(() => "/workspace");
+
+/// The model field was historically hard-coded to a provider model that
+/// overrode `omp`'s own configuration. An empty model now means "use whatever
+/// the local `omp` CLI has configured" (see `~/.omp/agent/config.yml`).
+const LEGACY_DEFAULT_MODEL = "deepseek/deepseek-v4-pro";
+
 function defaultSettings(): Settings {
   return {
     ompPath: "omp",
     cwd: "/workspace",
-    model: "deepseek/deepseek-v4-pro",
+    model: "",
     noSession: false,
     noSkills: false,
     noRules: false,
@@ -60,24 +72,38 @@ function defaultSettings(): Settings {
   };
 }
 
-function loadSettings(): Settings {
+async function loadSettings(): Promise<Settings> {
+  let s: Settings;
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
-    if (raw) return { ...defaultSettings(), ...(JSON.parse(raw) as Partial<Settings>) };
+    s = raw ? { ...defaultSettings(), ...(JSON.parse(raw) as Partial<Settings>) } : defaultSettings();
   } catch {
     // fall through to defaults
+    s = defaultSettings();
   }
-  return defaultSettings();
+  // Heal settings saved with the container-convention cwd that does not exist
+  // on this machine, so previously persisted `/workspace` no longer blocks
+  // startup after the user has already clicked Apply once.
+  if (s.cwd === "/workspace") {
+    s.cwd = await homeCwdPromise;
+  }
+  // Heal the legacy hard-coded model: an empty model defers to the local `omp`
+  // CLI's configured model instead of overriding it.
+  if (s.model === LEGACY_DEFAULT_MODEL) {
+    s.model = "";
+  }
+  return s;
 }
 
 function saveSettings(s: Settings): void {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
 }
 
-function readSettingsForm(): Settings {
+async function readSettingsForm(): Promise<Settings> {
+  const home = await homeCwdPromise;
   return {
     ompPath: ompPathEl.value.trim() || "omp",
-    cwd: cwdEl.value.trim() || "/workspace",
+    cwd: cwdEl.value.trim() || home,
     model: modelEl.value.trim(),
     noSession: noSessionEl.checked,
     noSkills: noSkillsEl.checked,
@@ -96,8 +122,7 @@ function applySettingsToForm(s: Settings): void {
   extraArgsEl.value = s.extraArgs;
 }
 
-let settings = loadSettings();
-applySettingsToForm(settings);
+let settings: Settings = defaultSettings();
 
 // --- Rendering -------------------------------------------------------------
 
@@ -161,7 +186,7 @@ function renderStatus(): void {
 // --- Actions ---------------------------------------------------------------
 
 async function doStart(forceModel?: string): Promise<void> {
-  const s = readSettingsForm();
+  const s = await readSettingsForm();
   if (forceModel) s.model = forceModel;
   saveSettings(s);
   settings = s;
@@ -241,6 +266,11 @@ onTranscriptChange(renderTranscript);
 
 // Boot: attach the event listener, then start the session.
 void (async () => {
+  // Resolve settings (incl. the home-cwd fallback) before the first
+  // `doStart`, which reads the form and persists it.
+  settings = await loadSettings();
+  saveSettings(settings);
+  applySettingsToForm(settings);
   await subscribeEvents(onRpcEvent);
   renderStatus();
   await doStart();

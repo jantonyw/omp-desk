@@ -89,9 +89,13 @@ Interactive extension dialogs are auto-denied so the stream never hangs: `confir
 
 ## Settings
 
-Defaults: `omp` path `omp`, cwd `/workspace`, model `deepseek/deepseek-v4-pro`.
-Model selection is stored in `localStorage` and re-applied on restart; `omp`'s own config
-still owns the actual provider credentials. **Do not paste API keys here.**
+Defaults: `omp` path `omp`, cwd `/workspace`, model empty (defer to the local
+`omp` CLI's configured model).
+When `/workspace` does not exist (typical macOS/Windows desktops), the cwd
+falls back to the user's home directory so the app starts without editing
+settings. Model selection is stored in `localStorage` and re-applied on
+restart; `omp`'s own config still owns the actual provider credentials and
+model roles (`~/.omp/agent/config.yml`). **Do not paste API keys here.**
 
 ## License
 

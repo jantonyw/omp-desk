@@ -87,9 +87,12 @@ idna_adapter = "=1.0.0"
 
 ## 设置
 
-默认值：`omp` 路径为 `omp`，cwd 为 `/workspace`，模型为 `deepseek/deepseek-v4-pro`。
-模型选择保存在 `localStorage` 中并在重启时重新应用；`omp` 自身的配置仍持有实际的
-提供商凭据。**请勿将 API 密钥粘贴到此处。**
+默认值:`omp` 路径为 `omp`,cwd 为 `/workspace`,模型为空(沿用本地 `omp` CLI
+配置的模型)。
+当 `/workspace` 不存在时(典型的 macOS/Windows 桌面环境),cwd 会回退到用户主目录,
+无需改设置即可启动。模型选择保存在 `localStorage` 中并在重启时重新应用;`omp` 自身的
+配置仍持有实际的提供商凭据与模型角色(`~/.omp/agent/config.yml`)。
+**请勿将 API 密钥粘贴到此处。**
 
 ## 许可证
 
