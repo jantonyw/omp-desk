@@ -105,6 +105,7 @@ const noRulesEl = document.getElementById("no-rules") as HTMLInputElement;
 const extraArgsEl = document.getElementById("extra-args") as HTMLInputElement;
 const settingsPanel = document.getElementById("settings-panel")!;
 const settingsToggle = document.getElementById("settings-toggle") as HTMLButtonElement;
+const themeSelectEl = document.getElementById("theme-select") as HTMLSelectElement;
 
 // --- State -----------------------------------------------------------------
 
@@ -131,6 +132,10 @@ let slashFiltered: RpcAvailableSlashCommand[] = [];
 
 const SETTINGS_KEY = "omp-desk.settings";
 const UI_KEY = "omp-desk.ui";
+const THEME_KEY = "omp-desk.theme";
+
+type ThemeId = "dark" | "midnight" | "light" | "system";
+const THEMES: ThemeId[] = ["dark", "midnight", "light", "system"];
 
 /**
  * Plan invocation notes (real omp surface — do not invent RPC names):
@@ -141,6 +146,40 @@ const UI_KEY = "omp-desk.ui";
  *   Plan/Execute in this shell therefore uses `prompt` / `abort_and_prompt`
  *   with explicit planning vs execution instructions, then user confirm.
  */
+
+function isThemeId(v: string | null): v is ThemeId {
+  return v !== null && (THEMES as string[]).includes(v);
+}
+
+function resolveColorScheme(theme: ThemeId): "dark" | "light" {
+  if (theme === "light") return "light";
+  if (theme === "dark" || theme === "midnight") return "dark";
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function applyTheme(theme: ThemeId): void {
+  document.documentElement.setAttribute("data-theme", theme);
+  document.documentElement.style.colorScheme = resolveColorScheme(theme);
+  if (themeSelectEl.value !== theme) themeSelectEl.value = theme;
+}
+
+function loadTheme(): ThemeId {
+  try {
+    const raw = localStorage.getItem(THEME_KEY);
+    return isThemeId(raw) ? raw : "dark";
+  } catch {
+    return "dark";
+  }
+}
+
+function saveTheme(theme: ThemeId): void {
+  localStorage.setItem(THEME_KEY, theme);
+}
+
+function setTheme(theme: ThemeId): void {
+  saveTheme(theme);
+  applyTheme(theme);
+}
 
 const homeCwdPromise: Promise<string> = homeDir().catch(() => "/workspace");
 const LEGACY_DEFAULT_MODEL = "deepseek/deepseek-v4-pro";
@@ -237,10 +276,10 @@ function renderTranscript(): void {
   let html = "";
   for (const e of entries) {
     if (e.role === "user") {
-      html += `<div class="msg user"><div class="role">you</div><div class="body">${escapeHtml(e.text)}</div></div>`;
+      html += `<div class="msg user"><div class="role">You</div><div class="body">${escapeHtml(e.text)}</div></div>`;
     } else if (e.role === "assistant") {
       const thinking = e.thinking
-        ? `<div class="thinking"><div class="role">thinking</div><div class="body">${escapeHtml(e.thinking)}</div></div>`
+        ? `<div class="thinking"><div class="role">Thinking</div><div class="body">${escapeHtml(e.thinking)}</div></div>`
         : "";
       const tool = e.toolName
         ? `<div class="tooltag">${escapeHtml(e.toolName)}</div>`
@@ -249,10 +288,10 @@ function renderTranscript(): void {
       const body = e.streaming && !e.text.trim()
         ? ""
         : renderMarkdown(e.text || "");
-      html += `<div class="${cls}" data-id="${e.id}"><div class="role">omp</div>${tool}<div class="body md">${body}</div>${thinking}</div>`;
+      html += `<div class="${cls}" data-id="${e.id}"><div class="role">Omp</div>${tool}<div class="body md">${body}</div>${thinking}</div>`;
     } else if (e.role === "tool") {
       const cls = e.isError ? "msg tool error" : "msg tool";
-      html += `<div class="${cls}"><div class="role">tool</div><div class="body">${escapeHtml(e.text)}</div></div>`;
+      html += `<div class="${cls}"><div class="role">Tool</div><div class="body">${escapeHtml(e.text)}</div></div>`;
     } else {
       const cls = e.isError ? "msg system error" : "msg system";
       html += `<div class="${cls}"><div class="body">${escapeHtml(e.text)}</div></div>`;
@@ -287,18 +326,19 @@ function renderStatus(): void {
   modelSelectEl.disabled = !status.ready || selectingModel;
   executePlanBtn.disabled = !status.ready || !lastPlanText.trim();
 
-  // Left session pane
+  // Left session pane — list-row status pill
+  let stateLabel = "starting…";
   if (!status.started) {
-    sessionStateEl.textContent = "not started";
+    stateLabel = "not started";
   } else if (!status.running) {
-    sessionStateEl.textContent = status.exited ? "exited" : "stopped";
+    stateLabel = status.exited ? "exited" : "stopped";
   } else if (status.is_streaming) {
-    sessionStateEl.textContent = "streaming";
+    stateLabel = "streaming";
   } else if (status.ready) {
-    sessionStateEl.textContent = "ready";
-  } else {
-    sessionStateEl.textContent = "starting…";
+    stateLabel = "ready";
   }
+  sessionStateEl.textContent = stateLabel;
+  sessionStateEl.setAttribute("data-state", stateLabel);
   sessionCwdEl.textContent = settings.cwd;
   sessionCwdEl.title = settings.cwd;
   const meta: string[] = [];
@@ -817,6 +857,15 @@ document.getElementById("apply-settings")!.addEventListener("click", () => {
   settingsToggle.textContent = "Settings";
 });
 
+themeSelectEl.addEventListener("change", () => {
+  const v = themeSelectEl.value;
+  setTheme(isThemeId(v) ? v : "dark");
+});
+
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+  if (loadTheme() === "system") applyTheme("system");
+});
+
 modePlanBtn.addEventListener("click", () => setWorkMode("plan"));
 modeExecuteBtn.addEventListener("click", () => {
   if (!lastPlanText.trim()) {
@@ -909,6 +958,7 @@ onCommandsChange(() => {
 
 // Boot
 void (async () => {
+  applyTheme(loadTheme());
   settings = await loadSettings();
   saveSettings(settings);
   applySettingsToForm(settings);
