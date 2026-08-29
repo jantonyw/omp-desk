@@ -5,6 +5,7 @@ import {
   sendPrompt,
   abort,
   getEntries,
+  appendUser,
   clearTranscript,
   onTranscriptChange,
   getChangedFiles,
@@ -84,7 +85,7 @@ export function App(): React.ReactElement {
   const [activeView, setActiveView] = useState<"explorer" | "scm" | "browser">("explorer");
 
   // Mode & Prompt state
-  const [workMode, setWorkMode] = useState<"plan" | "execute">("plan");
+  const [workMode, setWorkMode] = useState<"chat" | "plan" | "execute">("chat");
   const [composerText, setComposerText] = useState<string>("");
   const [lastPlanText, setLastPlanText] = useState<string>("");
   const [selectingModel, setSelectingModel] = useState<boolean>(false);
@@ -170,8 +171,8 @@ export function App(): React.ReactElement {
     }
     try {
       await fetchAvailableCommands();
-    } catch (err) {
-      appendSystem(`[commands] ${String(err)}`);
+    } catch {
+      // Background preload; ignore timeout if child is busy initializing
     }
     await refreshMessageCount();
     void loadWorkspaces();
@@ -418,13 +419,22 @@ export function App(): React.ReactElement {
         return;
       }
     }
-
     setComposerText("");
     setSlashOpen(false);
 
+    // Optimistically show user bubble on the right immediately!
+    appendUser(text);
+    bumpMessageCount();
+
     const isSlash = text.trimStart().startsWith("/");
     if (isSlash) {
-      bumpMessageCount();
+      void promptOrAbortAndPrompt(text, status.is_streaming).catch((err) =>
+        appendSystem(`[send failed] ${String(err)}`)
+      );
+      return;
+    }
+
+    if (workMode === "chat") {
       void promptOrAbortAndPrompt(text, status.is_streaming).catch((err) =>
         appendSystem(`[send failed] ${String(err)}`)
       );
@@ -433,7 +443,6 @@ export function App(): React.ReactElement {
 
     if (workMode === "plan") {
       const payload = PLAN_PREFIX + text;
-      bumpMessageCount();
       void sendPrompt(payload).catch((err) =>
         appendSystem(`[send failed] ${String(err)}`)
       );
@@ -441,8 +450,7 @@ export function App(): React.ReactElement {
     }
 
     if (!lastPlanText.trim()) {
-      bumpMessageCount();
-      void sendPrompt(text).catch((err) =>
+      void promptOrAbortAndPrompt(text, status.is_streaming).catch((err) =>
         appendSystem(`[send failed] ${String(err)}`)
       );
       return;
@@ -455,7 +463,6 @@ export function App(): React.ReactElement {
       setComposerText(text);
       return;
     }
-    bumpMessageCount();
     void promptOrAbortAndPrompt(
       EXECUTE_PREFIX + text + "\n\nApproved plan:\n" + lastPlanText,
       status.is_streaming

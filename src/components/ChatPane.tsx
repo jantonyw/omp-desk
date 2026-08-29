@@ -1,37 +1,9 @@
-import React, { useState, useEffect, useRef, useMemo } from "react";
-import { marked } from "marked";
-import DOMPurify from "dompurify";
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import type { TranscriptEntry, WorkspaceGroup } from "../client";
 import type { BoundModel, RpcAvailableSlashCommand } from "../protocol";
 import { formatModelRef } from "../protocol";
-
-marked.setOptions({ gfm: true, breaks: true });
-
-const MD_TAGS = [
-  "p",
-  "h1",
-  "h2",
-  "h3",
-  "ul",
-  "ol",
-  "li",
-  "pre",
-  "code",
-  "a",
-  "strong",
-  "em",
-  "blockquote",
-  "br",
-  "hr",
-];
-
-function renderMarkdown(text: string): string {
-  const raw = marked.parse(text, { async: false }) as string;
-  return DOMPurify.sanitize(raw, {
-    ALLOWED_TAGS: MD_TAGS,
-    ALLOWED_ATTR: ["href", "title", "target", "rel", "class"],
-  });
-}
+import { TraceView } from "./TraceView";
+import { renderMarkdown } from "../markdown-renderer";
 
 const ROLE_LABELS = new Set(["default", "smol", "slow", "plan"]);
 
@@ -52,8 +24,66 @@ function modelRoleAnnotation(m: BoundModel): string {
   return [...new Set(found)].join(", ");
 }
 
+const TranscriptMessageItem = React.memo(function TranscriptMessageItem({
+  entry,
+}: {
+  entry: TranscriptEntry;
+}) {
+  const e = entry;
+  if (e.role === "user") {
+    return (
+      <div className="msg user">
+        <div className="role">You</div>
+        <div className="body">{e.text}</div>
+      </div>
+    );
+  }
+  if (e.role === "assistant") {
+    const cls = e.streaming ? "msg assistant streaming" : "msg assistant";
+    const bodyClass = e.streaming ? "body" : "body md";
+    return (
+      <div className={cls} data-id={e.id}>
+        <div className="role">Omp</div>
+        {e.toolName && <div className="tooltag">{e.toolName}</div>}
+        {e.thinking && (
+          <div className="thinking">
+            <div className="role">Thinking</div>
+            <div className="body">{e.thinking}</div>
+          </div>
+        )}
+        {e.streaming ? (
+          <div className={bodyClass}>
+            {e.text || ""}
+            <span className="streaming-cursor">▌</span>
+          </div>
+        ) : (
+          <div
+            className={bodyClass}
+            dangerouslySetInnerHTML={{ __html: renderMarkdown(e.text) }}
+          />
+        )}
+      </div>
+    );
+  }
+  if (e.role === "tool") {
+    const cls = e.isError ? "msg tool error" : "msg tool";
+    return (
+      <div className={cls}>
+        <div className="role">Tool</div>
+        <div className="body">{e.text}</div>
+      </div>
+    );
+  }
+  const cls = e.isError ? "msg system error" : "msg system";
+  return (
+    <div className={cls}>
+      <div className="body">{e.text}</div>
+    </div>
+  );
+});
+
 interface ChatPaneProps {
-  workMode: "plan" | "execute";
+  workMode: "chat" | "plan" | "execute";
   entries: TranscriptEntry[];
   composerText: string;
   isStreaming: boolean;
@@ -69,7 +99,7 @@ interface ChatPaneProps {
   workspaceGroups: WorkspaceGroup[];
   composerRef: React.RefObject<HTMLTextAreaElement>;
   transcriptRef: React.RefObject<HTMLElement>;
-  onSetWorkMode: (mode: "plan" | "execute") => void;
+  onSetWorkMode: (mode: "chat" | "plan" | "execute") => void;
   onComposerChange: (text: string) => void;
   onComposerKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   onSlashTrigger: () => void;
@@ -111,12 +141,14 @@ export function ChatPane({
   onSelectWorkspace,
   onAddWorkspace,
 }: ChatPaneProps): React.ReactElement {
+  const [activeViewTab, setActiveViewTab] = useState<"chat" | "trace">("chat");
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [wsPickerOpen, setWsPickerOpen] = useState(false);
 
   const popoverRef = useRef<HTMLDivElement>(null);
   const modelBtnRef = useRef<HTMLButtonElement>(null);
   const wsSwitcherRef = useRef<HTMLDivElement>(null);
+  const bottomAnchorRef = useRef<HTMLDivElement>(null);
 
   const emptyChat = !entries.some((e) => e.role === "user" || e.role === "assistant");
 
@@ -129,12 +161,25 @@ export function ChatPane({
     return currentCwd.split(/[/\\]/).pop() || "工作区";
   }, [workspaceGroups, currentCwd]);
 
-  useEffect(() => {
-    if (transcriptRef.current) {
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
+    if (bottomAnchorRef.current) {
+      bottomAnchorRef.current.scrollIntoView({ behavior, block: "end" });
+    } else if (transcriptRef.current) {
       transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
     }
-  }, [entries]);
+  }, [transcriptRef]);
 
+  useEffect(() => {
+    if (activeViewTab === "chat") {
+      scrollToBottom("auto");
+      const t1 = setTimeout(() => scrollToBottom("auto"), 30);
+      const t2 = setTimeout(() => scrollToBottom("smooth"), 120);
+      return () => {
+        clearTimeout(t1);
+        clearTimeout(t2);
+      };
+    }
+  }, [entries, activeViewTab, scrollToBottom]);
   // Click outside to close popovers
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -163,7 +208,7 @@ export function ChatPane({
   return (
     <section
       id="pane-chat"
-      className={emptyChat ? "empty-chat" : ""}
+      className={emptyChat && activeViewTab === "chat" ? "empty-chat" : ""}
       aria-label="Chat"
     >
       <nav
@@ -176,25 +221,57 @@ export function ChatPane({
           paddingRight: "16px",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-          <button
-            type="button"
-            id="mode-plan"
-            className={`mode-tab ${workMode === "plan" ? "active" : ""}`}
-            aria-pressed={workMode === "plan"}
-            onClick={() => onSetWorkMode("plan")}
-          >
-            Plan
-          </button>
-          <button
-            type="button"
-            id="mode-execute"
-            className={`mode-tab ${workMode === "execute" ? "active" : ""}`}
-            aria-pressed={workMode === "execute"}
-            onClick={() => onSetWorkMode("execute")}
-          >
-            Execute
-          </button>
+        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          {/* 对话 (Chat) | 轨迹 (Trace) Tab Switcher (Image #2 layout) */}
+          <div style={{ display: "flex", alignItems: "center", gap: "2px" }}>
+            <button
+              type="button"
+              className={`mode-tab ${activeViewTab === "chat" ? "active" : ""}`}
+              onClick={() => setActiveViewTab("chat")}
+            >
+              对话
+            </button>
+            <button
+              type="button"
+              className={`mode-tab ${activeViewTab === "trace" ? "active" : ""}`}
+              onClick={() => setActiveViewTab("trace")}
+            >
+              轨迹
+            </button>
+          </div>
+
+          <span style={{ color: "var(--border)", userSelect: "none" }}>|</span>
+
+          {/* Chat | Plan | Execute 3 Work Mode Tabs */}
+          <div style={{ display: "flex", alignItems: "center", gap: "2px" }}>
+            <button
+              type="button"
+              id="mode-chat"
+              className={`mode-tab ${workMode === "chat" ? "active" : ""}`}
+              aria-pressed={workMode === "chat"}
+              onClick={() => onSetWorkMode("chat")}
+            >
+              Chat
+            </button>
+            <button
+              type="button"
+              id="mode-plan"
+              className={`mode-tab ${workMode === "plan" ? "active" : ""}`}
+              aria-pressed={workMode === "plan"}
+              onClick={() => onSetWorkMode("plan")}
+            >
+              Plan
+            </button>
+            <button
+              type="button"
+              id="mode-execute"
+              className={`mode-tab ${workMode === "execute" ? "active" : ""}`}
+              aria-pressed={workMode === "execute"}
+              onClick={() => onSetWorkMode("execute")}
+            >
+              Execute
+            </button>
+          </div>
         </div>
 
         {/* Workspace Switcher Pill & Popover (Image #1 layout) */}
@@ -262,65 +339,43 @@ export function ChatPane({
       </nav>
 
       <div id="chat-stage">
-        <div
-          id="welcome"
-          className="welcome"
-          aria-hidden={emptyChat ? "false" : "true"}
-        >
-          <h1 className="welcome-title">Ask omp</h1>
-          <p className="welcome-sub">how can I help?</p>
-        </div>
+        {/* If in Trace View: render TraceView */}
+        {activeViewTab === "trace" ? (
+          <TraceView entries={entries} />
+        ) : (
+          <>
+            <div
+              id="welcome"
+              className="welcome"
+              aria-hidden={emptyChat ? "false" : "true"}
+            >
+              <h1 className="welcome-title">Ask omp</h1>
+              <p className="welcome-sub">how can I help?</p>
+            </div>
 
-        <main id="transcript" ref={transcriptRef}>
-          {entries.map((e) => {
-            if (e.role === "user") {
-              return (
-                <div key={e.id} className="msg user">
-                  <div className="role">You</div>
-                  <div className="body">{e.text}</div>
-                </div>
-              );
-            } else if (e.role === "assistant") {
-              const cls = e.streaming ? "msg assistant streaming" : "msg assistant";
-              const bodyClass = e.streaming ? "body" : "body md";
-              return (
-                <div key={e.id} className={cls} data-id={e.id}>
-                  <div className="role">Omp</div>
-                  {e.toolName && <div className="tooltag">{e.toolName}</div>}
-                  {e.thinking && (
-                    <div className="thinking">
-                      <div className="role">Thinking</div>
-                      <div className="body">{e.thinking}</div>
+            <main id="transcript" ref={transcriptRef}>
+              {entries.map((e) => (
+                <TranscriptMessageItem key={e.id} entry={e} />
+              ))}
+              {isStreaming &&
+                (!entries.length ||
+                  entries[entries.length - 1]?.role === "user" ||
+                  (entries[entries.length - 1]?.role === "assistant" &&
+                    !entries[entries.length - 1]?.text.trim() &&
+                    !entries[entries.length - 1]?.thinking &&
+                    !entries[entries.length - 1]?.toolName)) && (
+                  <div className="msg assistant streaming loading-bubble">
+                    <div className="role">Omp</div>
+                    <div className="loading-dots" aria-label="Thinking">
+                      <span className="loading-dot" />
+                      <span className="loading-dot" />
+                      <span className="loading-dot" />
                     </div>
-                  )}
-                  {e.streaming ? (
-                    <div className={bodyClass}>{e.text || ""}</div>
-                  ) : (
-                    <div
-                      className={bodyClass}
-                      dangerouslySetInnerHTML={{ __html: renderMarkdown(e.text) }}
-                    />
-                  )}
-                </div>
-              );
-            } else if (e.role === "tool") {
-              const cls = e.isError ? "msg tool error" : "msg tool";
-              return (
-                <div key={e.id} className={cls}>
-                  <div className="role">Tool</div>
-                  <div className="body">{e.text}</div>
-                </div>
-              );
-            } else {
-              const cls = e.isError ? "msg system error" : "msg system";
-              return (
-                <div key={e.id} className={cls}>
-                  <div className="body">{e.text}</div>
-                </div>
-              );
-            }
-          })}
-        </main>
+                  </div>
+                )}
+              <div ref={bottomAnchorRef} style={{ height: "1px", flexShrink: 0, opacity: 0 }} />
+            </main>
+        )}
 
         <footer id="composer-bar">
           <div className="composer-wrap">
@@ -372,7 +427,13 @@ export function ChatPane({
               <textarea
                 ref={composerRef}
                 id="composer"
-                placeholder="Ask me anything (/ for commands · Enter send)"
+                placeholder={
+                  workMode === "chat"
+                    ? "Chat mode: Ask anything (/ for commands · Enter send)..."
+                    : workMode === "plan"
+                    ? "Plan mode: Describe your goal to generate a structured implementation plan..."
+                    : "Execute mode: Implement code changes and execute tasks..."
+                }
                 rows={2}
                 spellCheck={false}
                 value={composerText}

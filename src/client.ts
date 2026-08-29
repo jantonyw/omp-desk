@@ -130,7 +130,7 @@ const pending = new Map<string, Pending>();
 let reqSeq = 1;
 
 export function getEntries(): TranscriptEntry[] {
-  return entries;
+  return entries.map((e) => (e.streaming ? { ...e } : e));
 }
 
 export function clearTranscript(): void {
@@ -608,15 +608,18 @@ export function handleEvent(ev: RpcEventPayload): void {
     }
     case "exited": {
       resetLive();
-      entries.push({
-        id: `x${seq++}`,
-        role: "system",
-        text: `[omp exited${ev.code != null ? ` code ${ev.code}` : ""}]`,
-      });
+      if (ev.code != null && ev.code !== 0) {
+        entries.push({
+          id: `x${seq++}`,
+          role: "system",
+          text: `[omp exited code ${ev.code}]`,
+          isError: true,
+        });
+      }
       break;
     }
     case "ready": {
-      entries.push({ id: `r${seq++}`, role: "system", text: "[omp ready]" });
+      // Ready state is reflected in status bar, not polluting chat transcript
       break;
     }
     case "response": {
