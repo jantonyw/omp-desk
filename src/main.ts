@@ -37,6 +37,7 @@ import {
   type RpcAvailableSlashCommand,
   type Settings,
   type Status,
+  type TranscriptHint,
 } from "./client";
 import { homeDir } from "@tauri-apps/api/path";
 import type { RpcEventPayload } from "./protocol";
@@ -282,7 +283,67 @@ function updateEmptyChat(): void {
   welcomeEl.setAttribute("aria-hidden", empty ? "false" : "true");
 }
 
-function renderTranscript(): void {
+/** Pending paint mode coalesced via rAF (many deltas → one paint per frame). */
+let paintScheduled = false;
+let paintMode: "stream" | "full" = "full";
+
+function scheduleTranscriptPaint(hint: TranscriptHint): void {
+  if (hint.mode === "full") paintMode = "full";
+  else if (!paintScheduled) paintMode = "stream";
+  // If a full is already pending, keep full.
+  if (paintScheduled) return;
+  paintScheduled = true;
+  requestAnimationFrame(() => {
+    paintScheduled = false;
+    const mode = paintMode;
+    paintMode = "full";
+    if (mode === "stream") {
+      paintLiveStream();
+    } else {
+      renderTranscriptFull();
+    }
+  });
+}
+
+/** Update only the live streaming assistant bubble — no marked/DOMPurify. */
+function paintLiveStream(): void {
+  const entries = getEntries();
+  const live = [...entries].reverse().find((e) => e.role === "assistant" && e.streaming);
+  if (!live) {
+    renderTranscriptFull();
+    return;
+  }
+  const node = transcriptEl.querySelector(`.msg.assistant[data-id="${CSS.escape(live.id)}"]`);
+  if (!node) {
+    // First paint of this bubble (or DOM was cleared) — structural insert via full render once.
+    renderTranscriptFull();
+    return;
+  }
+  const atBottom =
+    transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight < 40;
+  const body = node.querySelector(".body");
+  if (body) {
+    body.classList.remove("md");
+    body.textContent = live.text || "";
+  }
+  let thinkingEl = node.querySelector(".thinking .body") as HTMLElement | null;
+  if (live.thinking) {
+    let wrap = node.querySelector(".thinking") as HTMLElement | null;
+    if (!wrap) {
+      wrap = document.createElement("div");
+      wrap.className = "thinking";
+      wrap.innerHTML = `<div class="role">Thinking</div><div class="body"></div>`;
+      node.appendChild(wrap);
+      thinkingEl = wrap.querySelector(".body");
+    }
+    if (thinkingEl) thinkingEl.textContent = live.thinking;
+  }
+  node.classList.add("streaming");
+  updateEmptyChat();
+  if (atBottom) transcriptEl.scrollTop = transcriptEl.scrollHeight;
+}
+
+function renderTranscriptFull(): void {
   const entries = getEntries();
   const atBottom =
     transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight < 40;
@@ -299,10 +360,14 @@ function renderTranscript(): void {
         ? `<div class="tooltag">${escapeHtml(e.toolName)}</div>`
         : "";
       const cls = e.streaming ? "msg assistant streaming" : "msg assistant";
-      const body = e.streaming && !e.text.trim()
-        ? ""
-        : renderMarkdown(e.text || "");
-      html += `<div class="${cls}" data-id="${e.id}"><div class="role">Omp</div>${tool}<div class="body md">${body}</div>${thinking}</div>`;
+      // While streaming: plain text only. Markdown+sanitize once the turn ends.
+      const body = e.streaming
+        ? escapeHtml(e.text || "")
+        : e.text.trim()
+          ? renderMarkdown(e.text)
+          : "";
+      const bodyClass = e.streaming ? "body" : "body md";
+      html += `<div class="${cls}" data-id="${e.id}"><div class="role">Omp</div>${tool}<div class="${bodyClass}">${body}</div>${thinking}</div>`;
     } else if (e.role === "tool") {
       const cls = e.isError ? "msg tool error" : "msg tool";
       html += `<div class="${cls}"><div class="role">Tool</div><div class="body">${escapeHtml(e.text)}</div></div>`;
@@ -1145,7 +1210,7 @@ composerEl.addEventListener("keydown", (e: KeyboardEvent) => {
   }
 });
 
-onTranscriptChange(renderTranscript);
+onTranscriptChange(scheduleTranscriptPaint);
 onChangesChange(renderChanges);
 onPlanTasksChange(renderTasks);
 onModelsChange(() => {

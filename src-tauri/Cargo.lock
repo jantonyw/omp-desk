@@ -1960,6 +1960,7 @@ dependencies = [
  "tauri-plugin-shell",
  "time",
  "tokio",
+ "webkit2gtk",
 ]
 
 [[package]]

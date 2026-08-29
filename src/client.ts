@@ -96,10 +96,18 @@ export interface PlanTask {
 }
 
 let entries: TranscriptEntry[] = [];
-let listeners: Array<() => void> = [];
+let listeners: Array<(hint: TranscriptHint) => void> = [];
 let seq = 0;
 /** Text of the last user message already rendered, to dedupe omp's echo. */
 let lastUserText: string | null = null;
+
+/** Cap user/assistant/tool messages so long sessions do not grow forever. */
+const MAX_TRANSCRIPT_UAT = 200;
+/** Cap changed-files list. */
+const MAX_CHANGED_FILES = 100;
+
+/** Hint for the UI painter: stream = live bubble only; full = structural rebuild. */
+export type TranscriptHint = { mode: "stream" | "full" };
 
 let changedFiles: ChangedFile[] = [];
 let changeListeners: Array<() => void> = [];
@@ -128,13 +136,14 @@ export function getEntries(): TranscriptEntry[] {
 export function clearTranscript(): void {
   entries = [];
   lastUserText = null;
-  emit();
+  emit({ mode: "full" });
 }
 
 export function appendUser(text: string): void {
   entries.push({ id: `u${seq++}`, role: "user", text });
   lastUserText = text;
-  emit();
+  trimTranscript();
+  emit({ mode: "full" });
 }
 
 /**
@@ -158,15 +167,40 @@ function echoUser(text: string): void {
   appendUser(text);
 }
 
-function emit(): void {
-  for (const l of listeners) l();
+function emit(hint: TranscriptHint = { mode: "full" }): void {
+  for (const l of listeners) l(hint);
 }
 
-export function onTranscriptChange(fn: () => void): () => void {
+export function onTranscriptChange(fn: (hint: TranscriptHint) => void): () => void {
   listeners.push(fn);
   return () => {
     listeners = listeners.filter((l) => l !== fn);
   };
+}
+
+function trimTranscript(): void {
+  let uat = 0;
+  for (const e of entries) {
+    if (e.role === "user" || e.role === "assistant" || e.role === "tool") uat += 1;
+  }
+  while (uat > MAX_TRANSCRIPT_UAT) {
+    const idx = entries.findIndex(
+      (e) => e.role === "user" || e.role === "assistant" || e.role === "tool",
+    );
+    if (idx < 0) break;
+    // Drop preceding system noise attached to the oldest turn as well.
+    const dropFrom = idx > 0 && entries[idx - 1]?.role === "system" ? idx - 1 : idx;
+    const removed = entries.splice(dropFrom, idx - dropFrom + 1);
+    for (const r of removed) {
+      if (r.role === "user" || r.role === "assistant" || r.role === "tool") uat -= 1;
+    }
+  }
+}
+
+function trimChangedFiles(): void {
+  while (changedFiles.length > MAX_CHANGED_FILES) {
+    changedFiles.shift();
+  }
 }
 
 export function getChangedFiles(): ChangedFile[] {
@@ -509,6 +543,7 @@ function recordChange(toolName: string, args: unknown): void {
   } else {
     changedFiles.push(entry);
   }
+  trimChangedFiles();
   for (const l of changeListeners) l();
 }
 
@@ -517,6 +552,7 @@ export function handleEvent(ev: RpcEventPayload): void {
   const f = ev.frame as Record<string, unknown> | undefined;
   const kind = ev.kind;
   const ty = f && typeof f.type === "string" ? f.type : "";
+  let hint: TranscriptHint = { mode: "full" };
 
   switch (kind) {
     case "stderr": {
@@ -563,7 +599,8 @@ export function handleEvent(ev: RpcEventPayload): void {
           echoUser(extractText(msg));
         }
       } else if (ty === "message_update") {
-        handleMessageUpdate(f as Record<string, unknown>);
+        const streamOnly = handleMessageUpdate(f as Record<string, unknown>);
+        if (streamOnly) hint = { mode: "stream" };
       } else if (ty === "message_end") {
         const msg = f?.message as AgentMessage | undefined;
         if (msg?.role === "assistant") {
@@ -605,7 +642,8 @@ export function handleEvent(ev: RpcEventPayload): void {
     }
   }
 
-  emit();
+  trimTranscript();
+  emit(hint);
 }
 
 function handleResponse(resp: RpcResponse): void {
@@ -676,52 +714,73 @@ function handleExtensionUi(req: ExtensionUiRequest): void {
   }
 }
 
-function handleMessageUpdate(f: Record<string, unknown>): void {
+/** Returns true when only live text/thinking changed (safe for incremental paint). */
+function handleMessageUpdate(f: Record<string, unknown>): boolean {
   const evt = f.assistantMessageEvent as AssistantMessageEvent | undefined;
-  if (!evt) return;
+  if (!evt) return false;
 
   if (evt.type === "start" || evt.type === "text_start" || evt.type === "thinking_start") {
     if (!live) {
-      live = { id: `a${seq++}`, role: "assistant", text: "", thinking: "" };
+      live = {
+        id: `a${seq++}`,
+        role: "assistant",
+        text: "",
+        thinking: "",
+        streaming: true,
+      };
       entries.push(live as TranscriptEntry);
+      return false; // structural: new node
     }
-    return;
+    live.streaming = true;
+    return false;
   }
   if (evt.type === "text_delta" && typeof evt.delta === "string") {
     ensureLive();
     live!.text += evt.delta;
-    return;
+    live!.streaming = true;
+    return true;
   }
   if (evt.type === "thinking_delta" && typeof evt.delta === "string") {
     ensureLive();
     live!.thinking += evt.delta;
-    return;
+    live!.streaming = true;
+    return true;
   }
   if (evt.type === "text_end" && typeof evt.content === "string") {
     ensureLive();
     live!.text = evt.content;
-    return;
+    return false;
   }
   if (evt.type === "thinking_end" && typeof evt.content === "string") {
     ensureLive();
     live!.thinking = evt.content;
-    return;
+    return false;
   }
   if (evt.type === "toolcall_end" && evt.toolCall) {
     ensureLive();
     live!.toolName = evt.toolCall.name;
     live!.toolArgs = evt.toolCall.arguments;
-    return;
+    return false;
   }
   if (evt.type === "done" || evt.type === "error") {
     resetLive();
+    return false;
   }
+  return false;
 }
 
 function ensureLive(): void {
   if (!live) {
-    live = { id: `a${seq++}`, role: "assistant", text: "", thinking: "" };
+    live = {
+      id: `a${seq++}`,
+      role: "assistant",
+      text: "",
+      thinking: "",
+      streaming: true,
+    };
     entries.push(live as TranscriptEntry);
+  } else {
+    live.streaming = true;
   }
 }
 
@@ -730,7 +789,13 @@ function finalizeAssistant(msg: AgentMessage): void {
   const text = extractText(msg);
   if (text) {
     if (!live) {
-      live = { id: `a${seq++}`, role: "assistant", text: "", thinking: "" };
+      live = {
+        id: `a${seq++}`,
+        role: "assistant",
+        text: "",
+        thinking: "",
+        streaming: true,
+      };
       entries.push(live as TranscriptEntry);
     }
     if (!live.text) live.text = text;

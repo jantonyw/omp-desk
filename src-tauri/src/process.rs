@@ -6,10 +6,12 @@
 //! one JSON object per line; after negotiating v2, oversized frames arrive as
 //! base64 `rpc_chunk` sequences that we reassemble and validate in order.
 
+use std::collections::VecDeque;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -17,9 +19,15 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, Mutex};
 
+use crate::event_bridge::EventOutbox;
+
 pub const MAX_FRAME_BYTES: u64 = 1024 * 1024;
 pub const MAX_REASSEMBLED_BYTES: u64 = 64 * 1024 * 1024;
 const CHUNK_PAYLOAD_BYTES: usize = 256 * 1024;
+/// Abort a stalled rpc_chunk sequence after this idle period.
+const CHUNK_STALL_TIMEOUT: Duration = Duration::from_secs(30);
+/// Ring size for Host-retained stderr lines (not an unbounded historical log).
+const STDERR_RING: usize = 64;
 
 /// Settings identity for one omp session. `model: None` means "let omp use its
 /// configured default"; an explicit model is passed as `--model provider/id`.
@@ -74,6 +82,7 @@ struct Pending {
     count: usize,
     byte_length: u64,
     received: Vec<u8>,
+    last_activity: Instant,
 }
 
 impl Pending {
@@ -88,12 +97,24 @@ impl Pending {
         if bytes.len() > CHUNK_PAYLOAD_BYTES {
             return Err("rpc chunk payload exceeds the transport limit".into());
         }
+        // Hard cap: never grow `received` past the global reassembly limit.
+        if self.received.len() as u64 + bytes.len() as u64 > MAX_REASSEMBLED_BYTES {
+            return Err("rpc chunk sequence exceeds reassembly cap".into());
+        }
         self.received.extend_from_slice(&bytes);
         self.index += 1;
+        self.last_activity = Instant::now();
         if self.received.len() as u64 > self.byte_length {
             return Err("rpc chunk sequence exceeds declared length".into());
         }
+        if self.received.len() as u64 > MAX_REASSEMBLED_BYTES {
+            return Err("rpc chunk sequence exceeds reassembly cap".into());
+        }
         Ok(())
+    }
+
+    fn is_stalled(&self) -> bool {
+        self.last_activity.elapsed() > CHUNK_STALL_TIMEOUT
     }
 
     fn is_complete(&self) -> bool {
@@ -141,6 +162,8 @@ pub struct Host {
     stdin_tx: Option<mpsc::UnboundedSender<String>>,
     child: Child,
     status: Status,
+    /// Recent stderr lines only (ring). Not a growing historical frame log.
+    stderr_ring: VecDeque<String>,
 }
 
 struct Status {
@@ -177,7 +200,7 @@ impl OmpProcess {
     /// for stdin. Emitted events are pushed onto `emit`.
     pub fn spawn(
         settings: &SessionSettings,
-        emit: mpsc::UnboundedSender<RpcEvent>,
+        emit: EventOutbox,
     ) -> Result<Arc<OmpProcess>, String> {
         if settings.cwd.is_empty() {
             return Err("cwd is empty".to_string());
@@ -257,32 +280,6 @@ impl OmpProcess {
             let _ = stdin.shutdown().await;
         });
 
-        // Stderr reader: forward lines as `stderr` events (bounded by reader).
-        {
-            let emit = emit.clone();
-            tokio::spawn(async move {
-                let mut reader = BufReader::new(stderr);
-                let mut buf = String::new();
-                loop {
-                    buf.clear();
-                    match reader.read_line(&mut buf).await {
-                        Ok(0) | Err(_) => break,
-                        Ok(_) => {}
-                    }
-                    let line = buf.trim_end().to_string();
-                    if !line.is_empty() {
-                        let _ = emit.send(RpcEvent {
-                            kind: "stderr".into(),
-                            frame: None,
-                            text: Some(line),
-                            code: None,
-                            message: None,
-                        });
-                    }
-                }
-            });
-        }
-
         let initial_status = Status {
             pid,
             running: true,
@@ -301,7 +298,42 @@ impl OmpProcess {
             stdin_tx: Some(stdin_tx),
             child,
             status: initial_status,
+            stderr_ring: VecDeque::with_capacity(STDERR_RING),
         }));
+
+        // Stderr reader: forward lines as `stderr` events; keep a small ring on Host.
+        {
+            let emit = emit.clone();
+            let host = host.clone();
+            tokio::spawn(async move {
+                let mut reader = BufReader::new(stderr);
+                let mut buf = String::new();
+                loop {
+                    buf.clear();
+                    match reader.read_line(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                    let line = buf.trim_end().to_string();
+                    if !line.is_empty() {
+                        {
+                            let mut guard = host.lock().await;
+                            if guard.stderr_ring.len() >= STDERR_RING {
+                                guard.stderr_ring.pop_front();
+                            }
+                            guard.stderr_ring.push_back(line.clone());
+                        }
+                        emit.send(RpcEvent {
+                            kind: "stderr".into(),
+                            frame: None,
+                            text: Some(line),
+                            code: None,
+                            message: None,
+                        });
+                    }
+                }
+            });
+        }
 
         // Lifecycle task: drive the stdout reader until the child exits.
         {
@@ -314,7 +346,7 @@ impl OmpProcess {
                 guard.status.exited = true;
                 guard.status.ready = false;
                 guard.status.is_streaming = false;
-                let _ = emit.send(RpcEvent {
+                emit.send(RpcEvent {
                     kind: "exited".into(),
                     frame: None,
                     text: None,
@@ -339,18 +371,28 @@ impl OmpProcess {
 async fn run_stdout_loop(
     stdout: tokio::process::ChildStdout,
     host: &Arc<Mutex<Host>>,
-    emit: &mpsc::UnboundedSender<RpcEvent>,
+    emit: &EventOutbox,
 ) -> i32 {
     let mut reader = BufReader::new(stdout);
     let mut line = String::new();
     let mut pending: Option<Pending> = None;
 
     loop {
+        // Poll with a short timeout so stalled chunk sequences can be aborted
+        // even when omp stops writing mid-sequence.
         line.clear();
-        match reader.read_line(&mut line).await {
-            Ok(0) => break,
-            Ok(_) => {}
-            Err(_) => return -1,
+        let read = tokio::time::timeout(Duration::from_secs(1), reader.read_line(&mut line)).await;
+        match read {
+            Ok(Ok(0)) => break,
+            Ok(Ok(_)) => {}
+            Ok(Err(_)) => return -1,
+            Err(_elapsed) => {
+                if pending.as_ref().is_some_and(|p| p.is_stalled()) {
+                    emit_error(emit, "rpc chunk sequence stalled", None);
+                    pending = None;
+                }
+                continue;
+            }
         }
         let s = line.trim();
         if s.is_empty() {
@@ -423,12 +465,15 @@ async fn run_stdout_loop(
                 emit_error(emit, "invalid rpc chunk metadata", None);
                 continue;
             }
+            // Cap capacity reservation so a hostile byteLength cannot OOM before feed checks.
+            let cap = (byte_length as usize).min(MAX_REASSEMBLED_BYTES as usize);
             let mut p = Pending {
                 chunk_id: chunk_id.to_string(),
                 index: 0,
                 count: count as usize,
                 byte_length,
-                received: Vec::with_capacity(byte_length as usize),
+                received: Vec::with_capacity(cap.min(1024 * 1024)),
+                last_activity: Instant::now(),
             };
             if let Err(e) = p.feed(chunk_id, index as usize, data) {
                 emit_error(emit, &e, None);
@@ -460,7 +505,7 @@ async fn run_stdout_loop(
 async fn dispatch_pending(
     complete: Pending,
     host: &Arc<Mutex<Host>>,
-    emit: &mpsc::UnboundedSender<RpcEvent>,
+    emit: &EventOutbox,
     pending: &mut Option<Pending>,
 ) {
     match complete.finish() {
@@ -470,8 +515,8 @@ async fn dispatch_pending(
     *pending = None;
 }
 
-fn emit_error(emit: &mpsc::UnboundedSender<RpcEvent>, message: &str, text: Option<String>) {
-    let _ = emit.send(RpcEvent {
+fn emit_error(emit: &EventOutbox, message: &str, text: Option<String>) {
+    emit.send(RpcEvent {
         kind: "protocol_error".into(),
         frame: None,
         text,
@@ -484,7 +529,7 @@ fn emit_error(emit: &mpsc::UnboundedSender<RpcEvent>, message: &str, text: Optio
 async fn dispatch_frame(
     frame: serde_json::Value,
     host: &Arc<Mutex<Host>>,
-    emit: &mpsc::UnboundedSender<RpcEvent>,
+    emit: &EventOutbox,
 ) {
     let ty = frame
         .get("type")
