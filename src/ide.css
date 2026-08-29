@@ -1,0 +1,470 @@
+/* IDE sidebar — activity bar + Explorer / Source Control / Browser views.
+   Colors come only from the shared theme variables in style.css so all four
+   themes (Dark / Midnight / Light / System) apply automatically. */
+
+/* --- Activity bar --- */
+
+#activity-bar {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 0;
+  background: var(--bg-elev);
+  border-right: 1px solid var(--border-soft);
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.ab-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 10px;
+  color: var(--fg-mute);
+  cursor: pointer;
+}
+
+.ab-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--fg-dim);
+}
+
+.ab-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.ab-btn:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+/* --- Side panel shell --- */
+
+#pane-side {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  background: var(--bg-elev);
+  border-right: 1px solid var(--border-soft);
+  padding: 12px 10px;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.side-view {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  flex: 1 1 auto;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.side-view.hidden {
+  display: none;
+}
+
+.side-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.side-meta {
+  flex: 0 0 auto;
+  font: 11px var(--mono);
+  color: var(--fg-mute);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.side-note {
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--fg-mute);
+  overflow-wrap: anywhere;
+}
+
+.side-note.error {
+  color: var(--error);
+}
+
+/* --- File tree --- */
+
+.file-tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  font-size: 12.5px;
+}
+
+.file-tree ul {
+  list-style: none;
+  margin: 0;
+  padding-left: 12px;
+}
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 2.5px 6px 2.5px 2px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--fg-dim);
+  font-size: inherit;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tree-row:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.tree-row.selected {
+  background: var(--accent-soft);
+  color: var(--accent-dim);
+}
+
+.tree-chev {
+  flex: 0 0 12px;
+  font-size: 9px;
+  color: var(--fg-mute);
+  transition: transform 0.12s ease;
+}
+
+.tree-row.dir.open > .tree-chev {
+  transform: rotate(90deg);
+}
+
+.tree-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* --- Editor --- */
+
+.editor-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 46%;
+  min-height: 0;
+  gap: 4px;
+  border-top: 1px solid var(--border-soft);
+  padding-top: 8px;
+}
+
+.editor-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.editor-filename {
+  font: 11px var(--mono);
+  color: var(--fg-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1 1 auto;
+}
+
+.editor-dirty {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.editor {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  resize: none;
+  padding: 8px;
+  background: var(--bg-input);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font: 11.5px/1.5 var(--mono);
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+}
+
+.editor:focus {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+/* --- Source Control --- */
+
+.scm-branch {
+  flex: 0 0 auto;
+  font: 600 12.5px var(--sans);
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.scm-branch .ab {
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--fg-mute);
+}
+
+.scm-files,
+.scm-log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  flex: 0 0 auto;
+  max-height: 34%;
+  min-height: 0;
+}
+
+.scm-files {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.scm-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 8px;
+  background: transparent;
+  border: none;
+  color: var(--fg-dim);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.scm-file:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.scm-file.selected {
+  background: var(--accent-soft);
+  color: var(--accent-dim);
+}
+
+.scm-badge {
+  flex: 0 0 auto;
+  min-width: 14px;
+  text-align: center;
+  font: 700 10px var(--mono);
+  padding: 1px 3px;
+  border-radius: 4px;
+  background: var(--bg-elev2);
+}
+
+.scm-badge[data-badge="M"] { color: var(--user); }
+.scm-badge[data-badge="A"] { color: var(--ok); }
+.scm-badge[data-badge="D"] { color: var(--error); }
+.scm-badge[data-badge="?"] { color: var(--fg-mute); }
+.scm-badge[data-badge="R"],
+.scm-badge[data-badge="C"],
+.scm-badge[data-badge="U"] { color: var(--tool); }
+
+.scm-file-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.scm-empty {
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--fg-mute);
+}
+
+.scm-actions,
+.scm-remote {
+  display: flex;
+  gap: 6px;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+}
+
+.scm-actions button,
+.scm-remote button,
+.scm-commit button {
+  flex: 1 1 auto;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.scm-actions button.danger:not(:disabled) {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.scm-diff {
+  flex: 0 0 auto;
+  max-height: 190px;
+  min-height: 40px;
+  margin: 0;
+  padding: 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  font: 10.5px/1.5 var(--mono);
+  color: var(--fg-dim);
+  white-space: pre;
+  overflow: auto;
+}
+
+.scm-commit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.scm-commit textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 44px;
+  padding: 8px;
+  background: var(--bg-input);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font: 12.5px/1.45 var(--sans);
+}
+
+.scm-commit textarea:focus {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.scm-output {
+  flex: 0 0 auto;
+  max-height: 72px;
+  overflow-y: auto;
+  font: 11px/1.45 var(--mono);
+  color: var(--fg-mute);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.scm-output.error {
+  color: var(--error);
+}
+
+.scm-output.ok {
+  color: var(--ok);
+}
+
+.scm-log-head {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--fg-mute);
+}
+
+.scm-log {
+  flex: 1 1 auto;
+  max-height: none;
+}
+
+.scm-log li {
+  padding: 3px 6px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--fg-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.scm-log li:hover {
+  background: var(--bg-hover);
+}
+
+.scm-log .hash {
+  font: 600 11px var(--mono);
+  color: var(--accent-dim);
+  margin-right: 6px;
+}
+
+.scm-log .meta {
+  color: var(--fg-mute);
+  font-size: 10.5px;
+}
+
+/* --- Browser --- */
+
+.browser-bar {
+  display: flex;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.browser-bar input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 5px 8px;
+  background: var(--bg-input);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font: 12px var(--sans);
+}
+
+.browser-bar input:focus {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.browser-bar button {
+  flex: 0 0 auto;
+  padding: 4px 9px;
+  font-size: 12px;
+}
+
+.browser-actions {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.browser-frame {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: #ffffff;
+}

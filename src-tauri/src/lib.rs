@@ -11,6 +11,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod event_bridge;
+pub mod ide;
 mod process;
 
 use std::sync::Arc;
@@ -309,6 +310,19 @@ pub fn run() {
             get_status,
             stop_session,
             open_url,
+            ide::fs_list,
+            ide::fs_read,
+            ide::fs_write,
+            ide::git_status,
+            ide::git_diff,
+            ide::git_stage,
+            ide::git_unstage,
+            ide::git_discard,
+            ide::git_commit,
+            ide::git_fetch,
+            ide::git_pull,
+            ide::git_push,
+            ide::git_log,
         ])
         .run(tauri::generate_context!())
         .expect("error while running omp-desk");

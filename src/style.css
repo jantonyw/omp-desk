@@ -201,6 +201,8 @@
   --radius-xl: 16px;
   --left-w: 200px;
   --right-w: 248px;
+  --bar-w: 44px;
+  --side-w: 260px;
 }
 
 * {
@@ -445,14 +447,23 @@ body {
   outline-offset: 1px;
 }
 
-/* --- Studio three-pane --- */
+/* --- Studio: activity bar + side panel + three panes --- */
 #studio {
   flex: 1 1 auto;
   display: grid;
-  grid-template-columns: var(--left-w) minmax(0, 1fr) var(--right-w);
+  grid-template-columns: var(--bar-w) var(--side-w) var(--left-w) minmax(0, 1fr) var(--right-w);
   min-height: 0;
   overflow: hidden;
   width: 100%;
+}
+
+/* Side panel collapsed: drop its column and hide the pane entirely. */
+#studio.side-closed {
+  grid-template-columns: var(--bar-w) var(--left-w) minmax(0, 1fr) var(--right-w);
+}
+
+#studio.side-closed #pane-side {
+  display: none;
 }
 
 #pane-sessions,
@@ -1370,7 +1381,10 @@ button.linkish:disabled {
 
 @media (max-width: 960px) {
   #studio {
-    grid-template-columns: 168px minmax(0, 1fr);
+    grid-template-columns: var(--bar-w) var(--side-w) 168px minmax(0, 1fr);
+  }
+  #studio.side-closed {
+    grid-template-columns: var(--bar-w) 168px minmax(0, 1fr);
   }
   #pane-inspector {
     display: none;

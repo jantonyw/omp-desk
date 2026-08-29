@@ -41,6 +41,7 @@ import {
 } from "./client";
 import { homeDir } from "@tauri-apps/api/path";
 import type { RpcEventPayload } from "./protocol";
+import { initIde } from "./ide";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 
@@ -1097,7 +1098,8 @@ settingsToggle.addEventListener("click", () => {
   settingsToggle.textContent = isOpen ? "Hide settings" : "Settings";
 });
 document.getElementById("apply-settings")!.addEventListener("click", () => {
-  void doStart();
+  // cwd may have changed — reload the IDE side panel tree from the new root.
+  void doStart().then(() => ide.refresh());
   settingsPanel.classList.remove("open");
   settingsToggle.textContent = "Settings";
 });
@@ -1220,6 +1222,9 @@ onCommandsChange(() => {
   if (isSlashMode(composerEl.value)) renderSlashPalette();
 });
 
+// IDE sidebar (activity bar + Explorer / Source Control / Browser).
+const ide = initIde(() => settings.cwd);
+
 // Boot
 void (async () => {
   applyTheme(loadTheme());
@@ -1228,6 +1233,8 @@ void (async () => {
   applySettingsToForm(settings);
   activeModelRef = settings.model;
   setWorkMode(loadUiMode());
+  // cwd is final now — reload the IDE tree under the real root.
+  ide.refresh();
   await subscribeEvents(onRpcEvent);
   renderStatus();
   renderChanges();

@@ -20,6 +20,7 @@
       })();
     </script>
     <link rel="stylesheet" href="/src/style.css" />
+    <link rel="stylesheet" href="/src/ide.css" />
   </head>
   <body>
     <div id="app">
@@ -102,6 +103,128 @@
       </section>
 
       <div id="studio">
+        <nav id="activity-bar" aria-label="Views">
+          <button
+            type="button"
+            class="ab-btn active"
+            data-view="explorer"
+            title="Explorer"
+            aria-label="Explorer"
+            aria-pressed="true"
+          >
+            <svg width="20" height="20" viewBox="0 0 16 16" aria-hidden="true" fill="none">
+              <path d="M7 2 3 6v8h4V2ZM9 2v12h4V4l-2-2H9Z" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/>
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="ab-btn"
+            data-view="scm"
+            title="Source Control"
+            aria-label="Source Control"
+            aria-pressed="false"
+          >
+            <svg width="20" height="20" viewBox="0 0 16 16" aria-hidden="true" fill="none">
+              <path d="M10.5 4.5a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm-6 5a2 2 0 1 0 .001 4.001A2 2 0 0 0 4.5 9.5Zm1.5-3.2a1.8 1.8 0 0 1 0 3.4M6 6.3a1.8 1.8 0 0 0 0-3.4" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/>
+              <circle cx="4.5" cy="4.5" r="1.6" stroke="currentColor" stroke-width="1.25"/>
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="ab-btn"
+            data-view="browser"
+            title="Browser"
+            aria-label="Browser"
+            aria-pressed="false"
+          >
+            <svg width="20" height="20" viewBox="0 0 16 16" aria-hidden="true" fill="none">
+              <circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.25"/>
+              <path d="M2.5 8h11M8 2c-2 2-2.6 3.8-2.6 6S6 12 8 14c2-2 2.6-3.8 2.6-6S10 2 8 2Z" stroke="currentColor" stroke-width="1.25"/>
+            </svg>
+          </button>
+        </nav>
+
+        <aside id="pane-side" aria-label="Side panel">
+          <section id="view-explorer" class="side-view" aria-label="Explorer">
+            <div class="side-head">
+              <span class="pane-title">Explorer</span>
+              <button id="explorer-refresh" type="button" class="linkish" title="Refresh">Refresh</button>
+            </div>
+            <div id="explorer-root" class="side-meta" title=""></div>
+            <div id="explorer-status" class="side-note"></div>
+            <ul id="file-tree" class="file-tree" role="tree" aria-label="Files"></ul>
+            <div id="editor-pane" class="editor-pane">
+              <div class="editor-head">
+                <span id="editor-filename" class="editor-filename"></span>
+                <span id="editor-dirty" class="editor-dirty" title="Unsaved changes" hidden></span>
+                <button id="editor-save" type="button" class="linkish" disabled>Save</button>
+              </div>
+              <textarea
+                id="editor"
+                class="editor"
+                spellcheck="false"
+                placeholder="Select a file to edit"
+              ></textarea>
+              <div id="editor-status" class="side-note"></div>
+            </div>
+          </section>
+
+          <section id="view-scm" class="side-view hidden" aria-label="Source Control">
+            <div class="side-head">
+              <span class="pane-title">Source Control</span>
+              <button id="scm-refresh" type="button" class="linkish" title="Refresh">Refresh</button>
+            </div>
+            <div id="scm-branch" class="scm-branch"></div>
+            <ul id="scm-files" class="scm-files" role="list"></ul>
+            <div class="scm-actions">
+              <button id="scm-stage" type="button" disabled>Stage</button>
+              <button id="scm-unstage" type="button" disabled>Unstage</button>
+              <button id="scm-discard" type="button" class="danger" disabled>Discard</button>
+            </div>
+            <pre id="scm-diff" class="scm-diff"></pre>
+            <div class="scm-commit">
+              <textarea
+                id="scm-message"
+                rows="2"
+                spellcheck="false"
+                placeholder="Commit message"
+              ></textarea>
+              <button id="scm-commit" type="button" disabled>Commit</button>
+            </div>
+            <div class="scm-remote">
+              <button id="scm-fetch" type="button">Fetch</button>
+              <button id="scm-pull" type="button">Pull</button>
+              <button id="scm-push" type="button">Push</button>
+            </div>
+            <div id="scm-output" class="scm-output" role="status"></div>
+            <div class="scm-log-head">Recent commits</div>
+            <ul id="scm-log" class="scm-log" role="list"></ul>
+          </section>
+
+          <section id="view-browser" class="side-view hidden" aria-label="Browser">
+            <div class="browser-bar">
+              <input
+                id="browser-url"
+                type="text"
+                spellcheck="false"
+                placeholder="https://…"
+                aria-label="URL"
+              />
+              <button id="browser-go" type="button">Go</button>
+              <button id="browser-back" type="button" title="Back" aria-label="Back" disabled>←</button>
+            </div>
+            <div class="browser-actions">
+              <button id="browser-open-external" type="button" class="linkish">
+                Open in system browser
+              </button>
+            </div>
+            <iframe id="browser-frame" class="browser-frame" title="Browser" src="about:blank"></iframe>
+            <div id="browser-blocked" class="side-note" hidden>
+              This site may block in-app embedding. Use “Open in system browser”.
+            </div>
+          </section>
+        </aside>
+
         <aside id="pane-sessions" aria-label="Sessions">
           <div class="pane-title">Sessions</div>
           <button id="new-session" type="button" class="new-chat-btn">New chat</button>
