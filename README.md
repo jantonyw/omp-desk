@@ -3,18 +3,25 @@
 A Tauri 2 desktop shell around the [`omp`](https://github.com/oh-my-pi/oh-my-pi) coding agent.
 
 omp-desk is only **UI + process management**. It spawns `omp --mode rpc-ui` and speaks its
-stdlib JSONL RPC protocol. The agent, its tools, providers, LSP integration, hashline, and the
-DeepSeek client all live inside `omp` — none of that is reimplemented here.
+stdio JSONL RPC protocol. The agent, its tools, providers, LSP integration, hashline, and the
+model client all live inside `omp` — none of that is reimplemented here.
 
-## Screenshot
+中文说明见 [README.zh-CN.md](README.zh-CN.md)。
 
-Dark, dense single window: transcript · composer (Enter to send, Shift+Enter for a newline) ·
-status bar · settings for the `omp` path / working directory / model.
+## Screenshot / UI
+
+Dark, dense Codex-like three-pane studio (default **1200×760**, usable at 1280×800; composer always visible):
+
+- **Left** — session status, cwd, New / Stop
+- **Center** — transcript + composer
+- **Right** — Changes (from tool events), plan Tasks, Run / Abort
+
+Top bar: **Plan / Execute** toggle and a **bound-model dropdown** (`get_available_models` / `set_model`).
 
 ## Requirements
 
 - [Rust](https://rustup.rs) (the repo pins dependencies for rustc **1.85**; see below)
-- [Node.js](https://nodejs.org) ≥ 20 and npm
+- [Bun](https://bun.sh) (package manager — not npm)
 - `omp` on your `PATH` (or point the settings at an absolute path)
 
 ### Linux system dependencies
@@ -37,9 +44,10 @@ sudo dnf install webkit2gtk4.1-devel gtk3-devel pkgconf openssl-devel
 ## Build & run
 
 ```bash
-npm install
-npm run tauri dev      # run in dev mode (Vite dev server + Tauri window)
-npm run tauri build    # produce a release bundle
+bun install
+bun run tauri dev      # Vite + Tauri window
+bun run tauri build    # release bundle
+bun run build          # frontend only (tsc + vite)
 ```
 
 `cargo check` alone:
@@ -47,6 +55,22 @@ npm run tauri build    # produce a release bundle
 ```bash
 cd src-tauri && cargo check
 ```
+
+## Models
+
+After the session is **ready**, the shell calls real RPC `get_available_models` and fills the
+dropdown. Picking a model sends `set_model` with `{ provider, modelId }`. An empty selection
+means **omit `--model` on spawn** so `omp` uses `~/.omp` / agent config. Do not paste API keys
+into omp-desk.
+
+## Plan / Execute
+
+- **Plan** — prompts are sent with a read-only planning instruction; steps are parsed into the
+  right-hand Tasks list. omp CLI also exposes `--plan <model>` (plan model) and `--plan-yolo`
+  (headless plan→auto-approve→execute); pass those via Settings → extra args if you need them.
+  There is no inventable RPC `plan_mode` command — see `rpc-types.ts`.
+- **Execute** — use **Confirm execute** (or send while in Execute mode) after a plan exists;
+  the shell asks for confirmation, then sends a follow-up via `prompt` / `abort_and_prompt`.
 
 ## A note on the Rust toolchain
 
@@ -78,7 +102,8 @@ to keep the 1.85 build green.
 3. Tauri commands bridge the UI to the child: `start_session`, `send_prompt`, `abort`,
    `send_command`, `get_status`, `stop_session`, `respond_extension_ui`, `open_url`.
 4. The window (`src/main.ts` + `src/client.ts`) reduces `message_update` /
-   `agent_start` / `agent_end` / `tool_execution_*` frames into a live transcript.
+   `agent_start` / `agent_end` / `tool_execution_*` frames into a live transcript, Changes
+   list, and plan Tasks.
 
 ### Extension UI requests
 

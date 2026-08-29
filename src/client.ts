@@ -8,11 +8,13 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AgentMessage,
   AssistantMessageEvent,
+  BoundModel,
   ContentBlock,
   ExtensionUiRequest,
   RpcEventPayload,
   RpcResponse,
 } from "./protocol";
+import { formatModelRef } from "./protocol";
 
 export interface Settings {
   ompPath: string;
@@ -51,11 +53,41 @@ export interface TranscriptEntry {
   streaming?: boolean;
 }
 
+export interface ChangedFile {
+  path: string;
+  tool: string;
+  kind: "read" | "write" | "edit" | "other";
+}
+
+export interface PlanTask {
+  id: string;
+  text: string;
+  done: boolean;
+}
+
 let entries: TranscriptEntry[] = [];
 let listeners: Array<() => void> = [];
 let seq = 0;
 /** Text of the last user message already rendered, to dedupe omp's echo. */
 let lastUserText: string | null = null;
+
+let changedFiles: ChangedFile[] = [];
+let changeListeners: Array<() => void> = [];
+
+let planTasks: PlanTask[] = [];
+let planListeners: Array<() => void> = [];
+
+let availableModels: BoundModel[] = [];
+let modelListeners: Array<() => void> = [];
+
+type Pending = {
+  resolve: (r: RpcResponse) => void;
+  reject: (e: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+};
+const pending = new Map<string, Pending>();
+let reqSeq = 1;
+
 export function getEntries(): TranscriptEntry[] {
   return entries;
 }
@@ -92,6 +124,63 @@ export function onTranscriptChange(fn: () => void): () => void {
   return () => {
     listeners = listeners.filter((l) => l !== fn);
   };
+}
+
+export function getChangedFiles(): ChangedFile[] {
+  return changedFiles;
+}
+
+export function clearChangedFiles(): void {
+  changedFiles = [];
+  for (const l of changeListeners) l();
+}
+
+export function onChangesChange(fn: () => void): () => void {
+  changeListeners.push(fn);
+  return () => {
+    changeListeners = changeListeners.filter((l) => l !== fn);
+  };
+}
+
+export function getPlanTasks(): PlanTask[] {
+  return planTasks;
+}
+
+export function setPlanTasks(tasks: PlanTask[]): void {
+  planTasks = tasks;
+  for (const l of planListeners) l();
+}
+
+export function clearPlanTasks(): void {
+  planTasks = [];
+  for (const l of planListeners) l();
+}
+
+export function togglePlanTask(id: string): void {
+  planTasks = planTasks.map((t) => (t.id === id ? { ...t, done: !t.done } : t));
+  for (const l of planListeners) l();
+}
+
+export function onPlanTasksChange(fn: () => void): () => void {
+  planListeners.push(fn);
+  return () => {
+    planListeners = planListeners.filter((l) => l !== fn);
+  };
+}
+
+export function getAvailableModelsCache(): BoundModel[] {
+  return availableModels;
+}
+
+export function onModelsChange(fn: () => void): () => void {
+  modelListeners.push(fn);
+  return () => {
+    modelListeners = modelListeners.filter((l) => l !== fn);
+  };
+}
+
+function emitModels(): void {
+  for (const l of modelListeners) l();
 }
 
 /** Subscribe to the Tauri `rpc_event` stream. Returns an unsubscribe fn. */
@@ -160,12 +249,112 @@ function parseExtraArgs(raw: string): string[] {
   return out;
 }
 
+function nextClientId(): string {
+  return `desk-${Date.now()}-${reqSeq++}`;
+}
+
+/**
+ * Send an RPC command and wait for the matching `response` frame by `id`.
+ * Real command names only (see rpc-types.ts).
+ */
+export async function rpcRequest(
+  command: Record<string, unknown>,
+  timeoutMs = 45000,
+): Promise<RpcResponse> {
+  const id = typeof command.id === "string" ? command.id : nextClientId();
+  const payload = { ...command, id };
+  return new Promise<RpcResponse>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      reject(new Error(`RPC timeout waiting for ${String(command.type)}`));
+    }, timeoutMs);
+    pending.set(id, { resolve, reject, timer });
+    void sendCommand(payload).catch((err) => {
+      const p = pending.get(id);
+      if (p) {
+        clearTimeout(p.timer);
+        pending.delete(id);
+        p.reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
+  });
+}
+
+/** After ready: list bound models via real RPC `get_available_models`. */
+export async function fetchAvailableModels(): Promise<BoundModel[]> {
+  const resp = await rpcRequest({ type: "get_available_models" });
+  if (!resp.success) {
+    throw new Error(resp.error ?? "get_available_models failed");
+  }
+  const data = resp.data as { models?: BoundModel[] } | undefined;
+  availableModels = Array.isArray(data?.models) ? data!.models! : [];
+  emitModels();
+  return availableModels;
+}
+
+/** Switch active model via real RPC `set_model`. */
+export async function setModel(provider: string, modelId: string): Promise<BoundModel> {
+  const resp = await rpcRequest({ type: "set_model", provider, modelId });
+  if (!resp.success) {
+    throw new Error(resp.error ?? "set_model failed");
+  }
+  return resp.data as BoundModel;
+}
+
+/** Cycle model via real RPC `cycle_model`. */
+export async function cycleModel(): Promise<BoundModel | null> {
+  const resp = await rpcRequest({ type: "cycle_model" });
+  if (!resp.success) {
+    throw new Error(resp.error ?? "cycle_model failed");
+  }
+  const data = resp.data as { model?: BoundModel } | BoundModel | null;
+  if (!data) return null;
+  if ("model" in data && data.model) return data.model;
+  if ("id" in data && "provider" in data) return data as BoundModel;
+  return null;
+}
+
+/**
+ * Prompt with optional abort-first when the agent is streaming.
+ * Uses real commands `abort_and_prompt` or `prompt`.
+ */
+export async function promptOrAbortAndPrompt(
+  message: string,
+  isStreaming: boolean,
+): Promise<void> {
+  if (isStreaming) {
+    await rpcRequest({ type: "abort_and_prompt", message });
+  } else {
+    await sendPrompt(message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Plan text → task checklist (UI-side parse; omp has no plan-steps RPC)
+// ---------------------------------------------------------------------------
+
+/** Extract numbered / checklist steps from a plan markdown body. */
+export function parsePlanSteps(text: string): PlanTask[] {
+  const lines = text.split(/\r?\n/);
+  const tasks: PlanTask[] = [];
+  const re =
+    /^(?:#{1,6}\s+)?(?:[-*+]\s+\[[ xX]?\]\s+|[-*+]\s+|\d+[.)]\s+)(.+)$/;
+  for (const line of lines) {
+    const m = line.trim().match(re);
+    if (!m) continue;
+    const body = m[1].trim();
+    if (body.length < 2) continue;
+    // Skip pure section headers that slipped through.
+    if (/^(plan|steps?|tasks?|overview|summary)\b/i.test(body) && body.length < 24) {
+      continue;
+    }
+    tasks.push({ id: `pt${tasks.length + 1}`, text: body, done: false });
+  }
+  return tasks;
+}
+
 // ---------------------------------------------------------------------------
 // Event handling: reduce stdout frames into transcript entries.
-//
-// The assistant streams via `message_update` frames whose
-// `assistantMessageEvent` carries `text_delta` / `thinking_delta`. We coalesce
-// deltas into a live entry and finalize on `message_end` / `agent_end`.
 // ---------------------------------------------------------------------------
 
 interface Live {
@@ -185,6 +374,56 @@ function resetLive(): void {
     live.streaming = false;
     live = null;
   }
+}
+
+function resolvePending(resp: RpcResponse): void {
+  if (!resp.id) return;
+  const p = pending.get(resp.id);
+  if (!p) return;
+  clearTimeout(p.timer);
+  pending.delete(resp.id);
+  p.resolve(resp);
+}
+
+function toolKind(name: string): ChangedFile["kind"] {
+  const n = name.toLowerCase();
+  if (n === "write" || n.includes("write")) return "write";
+  if (n === "edit" || n.includes("edit")) return "edit";
+  if (n === "read" || n.includes("read")) return "read";
+  return "other";
+}
+
+function extractPathFromArgs(args: unknown): string | null {
+  if (!args || typeof args !== "object") return null;
+  const o = args as Record<string, unknown>;
+  for (const key of ["path", "file", "filePath", "filepath", "filename", "target"]) {
+    const v = o[key];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return null;
+}
+
+function recordChange(toolName: string, args: unknown): void {
+  const path = extractPathFromArgs(args);
+  if (!path) return;
+  const kind = toolKind(toolName);
+  if (kind === "other" && !["bash", "grep", "glob", "todo"].includes(toolName.toLowerCase())) {
+    // Still record if we have a path.
+  }
+  const existing = changedFiles.findIndex((c) => c.path === path);
+  const entry: ChangedFile = { path, tool: toolName, kind };
+  if (existing >= 0) {
+    // Prefer write/edit over read when upgrading.
+    const prev = changedFiles[existing];
+    if (prev.kind === "read" && (kind === "write" || kind === "edit")) {
+      changedFiles[existing] = entry;
+    } else if (kind === "write" || kind === "edit") {
+      changedFiles[existing] = entry;
+    }
+  } else {
+    changedFiles.push(entry);
+  }
+  for (const l of changeListeners) l();
 }
 
 /** Apply one stdout frame to the transcript. */
@@ -248,12 +487,14 @@ export function handleEvent(ev: RpcEventPayload): void {
         }
       } else if (ty === "tool_execution_start") {
         const toolName = String(f?.toolName ?? "tool");
+        const args = f?.args;
+        recordChange(toolName, args);
         entries.push({
           id: `t${seq++}`,
           role: "tool",
           text: `call ${toolName}`,
           toolName,
-          toolArgs: f?.args,
+          toolArgs: args,
           streaming: true,
         });
       } else if (ty === "tool_execution_end") {
@@ -279,7 +520,18 @@ export function handleEvent(ev: RpcEventPayload): void {
 }
 
 function handleResponse(resp: RpcResponse): void {
-  if (resp.success) return;
+  resolvePending(resp);
+  if (resp.success) {
+    // Cache model list / keep display helpers up to date.
+    if (resp.command === "get_available_models") {
+      const data = resp.data as { models?: BoundModel[] } | undefined;
+      if (Array.isArray(data?.models)) {
+        availableModels = data!.models!;
+        emitModels();
+      }
+    }
+    return;
+  }
   // Surface non-success responses (parse failures, async scheduling errors).
   entries.push({
     id: `er${seq++}`,
@@ -400,5 +652,18 @@ function extractText(msg: AgentMessage): string {
   return out;
 }
 
+/** Last completed assistant text in the transcript (for plan capture). */
+export function getLastAssistantText(): string {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i];
+    if (e.role === "assistant" && e.text.trim() && !e.streaming) {
+      return e.text;
+    }
+  }
+  return "";
+}
+
+export { formatModelRef };
+
 // Re-export the type for the UI.
-export type { RpcResponse, AgentMessage, ContentBlock, ExtensionUiRequest };
+export type { RpcResponse, AgentMessage, ContentBlock, ExtensionUiRequest, BoundModel };
