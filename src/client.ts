@@ -11,10 +11,40 @@ import type {
   BoundModel,
   ContentBlock,
   ExtensionUiRequest,
+  RpcAvailableSlashCommand,
   RpcEventPayload,
   RpcResponse,
+  SessionState,
 } from "./protocol";
 import { formatModelRef } from "./protocol";
+
+/** Injected by Plan mode before the user text — must match main.ts. */
+export const PLAN_PREFIX =
+  "[omp-desk Plan mode] Produce a concrete implementation plan only. " +
+  "Do not edit, write, or delete files. Do not run mutating shell commands. " +
+  "Respond with a short overview and a numbered list of steps.\n\n";
+
+/** Injected by Execute mode before the user / plan payload — must match main.ts. */
+export const EXECUTE_PREFIX =
+  "[omp-desk Execute mode] Implement the approved plan below. " +
+  "Apply the code changes and mark progress. Follow the steps in order.\n\n";
+
+/** Strip desk Plan/Execute injection so echo dedupe compares the typed text. */
+export function stripDeskModePrefix(text: string): string {
+  if (text.startsWith(PLAN_PREFIX)) return text.slice(PLAN_PREFIX.length);
+  if (text.startsWith(EXECUTE_PREFIX)) return text.slice(EXECUTE_PREFIX.length);
+  return text;
+}
+
+/** Remove markdown emphasis markers for plain task labels. */
+export function stripMarkdownEmphasis(text: string): string {
+  return text
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .replace(/__(.+?)__/g, "$1")
+    .replace(/\*([^*]+)\*/g, "$1")
+    .replace(/_([^_]+)_/g, "$1")
+    .replace(/`([^`]+)`/g, "$1");
+}
 
 export interface Settings {
   ompPath: string;
@@ -80,6 +110,9 @@ let planListeners: Array<() => void> = [];
 let availableModels: BoundModel[] = [];
 let modelListeners: Array<() => void> = [];
 
+let availableCommands: RpcAvailableSlashCommand[] = [];
+let commandListeners: Array<() => void> = [];
+
 type Pending = {
   resolve: (r: RpcResponse) => void;
   reject: (e: Error) => void;
@@ -109,9 +142,19 @@ export function appendUser(text: string): void {
  * `message_end`; together with the optimistic local append in `onSend` that
  * used to render three copies of one message. Render the echo only when it
  * differs from the last user message already shown.
+ *
+ * Plan/Execute modes inject a desk prefix before the typed text; omp echoes
+ * the full payload. Compare after stripping those prefixes so one Enter still
+ * yields one YOU bubble with only the typed text.
  */
 function echoUser(text: string): void {
-  if (!text || text === lastUserText) return;
+  if (!text) return;
+  if (text.startsWith(PLAN_PREFIX) || text.startsWith(EXECUTE_PREFIX)) {
+    // Already shown via appendUser(typed); never duplicate the injected payload.
+    return;
+  }
+  const normalized = stripDeskModePrefix(text);
+  if (normalized === lastUserText || text === lastUserText) return;
   appendUser(text);
 }
 
@@ -181,6 +224,26 @@ export function onModelsChange(fn: () => void): () => void {
 
 function emitModels(): void {
   for (const l of modelListeners) l();
+}
+
+export function getAvailableCommandsCache(): RpcAvailableSlashCommand[] {
+  return availableCommands;
+}
+
+export function onCommandsChange(fn: () => void): () => void {
+  commandListeners.push(fn);
+  return () => {
+    commandListeners = commandListeners.filter((l) => l !== fn);
+  };
+}
+
+function emitCommands(): void {
+  for (const l of commandListeners) l();
+}
+
+function setAvailableCommands(commands: RpcAvailableSlashCommand[]): void {
+  availableCommands = Array.isArray(commands) ? commands : [];
+  emitCommands();
 }
 
 /** Subscribe to the Tauri `rpc_event` stream. Returns an unsubscribe fn. */
@@ -299,6 +362,29 @@ export async function setModel(provider: string, modelId: string): Promise<Bound
     throw new Error(resp.error ?? "set_model failed");
   }
   return resp.data as BoundModel;
+}
+
+/** After ready: list slash commands via real RPC `get_available_commands`. */
+export async function fetchAvailableCommands(): Promise<RpcAvailableSlashCommand[]> {
+  const resp = await rpcRequest({ type: "get_available_commands" });
+  if (!resp.success) {
+    throw new Error(resp.error ?? "get_available_commands failed");
+  }
+  const data = resp.data as { commands?: RpcAvailableSlashCommand[] } | undefined;
+  setAvailableCommands(Array.isArray(data?.commands) ? data!.commands! : []);
+  return availableCommands;
+}
+
+/**
+ * Refresh session snapshot via real RPC `get_state`.
+ * Updates Rust-side message_count / model when the response is dispatched.
+ */
+export async function fetchSessionState(): Promise<SessionState> {
+  const resp = await rpcRequest({ type: "get_state" });
+  if (!resp.success) {
+    throw new Error(resp.error ?? "get_state failed");
+  }
+  return resp.data as SessionState;
 }
 
 /** Cycle model via real RPC `cycle_model`. */
@@ -511,6 +597,9 @@ export function handleEvent(ev: RpcEventPayload): void {
         // A new turn begins; a fresh live assistant entry starts on first delta.
       } else if (ty === "agent_end") {
         resetLive();
+      } else if (ty === "available_commands_update") {
+        const cmds = f?.commands as RpcAvailableSlashCommand[] | undefined;
+        setAvailableCommands(Array.isArray(cmds) ? cmds : []);
       }
       break;
     }
@@ -528,6 +617,11 @@ function handleResponse(resp: RpcResponse): void {
       if (Array.isArray(data?.models)) {
         availableModels = data!.models!;
         emitModels();
+      }
+    } else if (resp.command === "get_available_commands") {
+      const data = resp.data as { commands?: RpcAvailableSlashCommand[] } | undefined;
+      if (Array.isArray(data?.commands)) {
+        setAvailableCommands(data!.commands!);
       }
     }
     return;
@@ -666,4 +760,12 @@ export function getLastAssistantText(): string {
 export { formatModelRef };
 
 // Re-export the type for the UI.
-export type { RpcResponse, AgentMessage, ContentBlock, ExtensionUiRequest, BoundModel };
+export type {
+  RpcResponse,
+  AgentMessage,
+  ContentBlock,
+  ExtensionUiRequest,
+  BoundModel,
+  RpcAvailableSlashCommand,
+  SessionState,
+};

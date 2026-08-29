@@ -556,6 +556,8 @@ async fn dispatch_frame(
             "agent_end" => {
                 guard.status.is_streaming = false;
             }
+            // available_commands_update and other agent frames use kind "event";
+            // the frontend dispatches on frame.type (see rpc-types.ts).
             _ => {}
         }
     }
@@ -564,6 +566,8 @@ async fn dispatch_frame(
         "ready" => "ready".to_string(),
         "response" => "response".to_string(),
         "extension_ui_request" => "extension_ui_request".to_string(),
+        // Keep command-list pushes as generic events; UI keys off frame.type.
+        "available_commands_update" => "event".to_string(),
         _ => "event".to_string(),
     };
 
@@ -604,6 +608,11 @@ impl Host {
                 .map_err(|_| "stdin channel closed".to_string()),
             None => Err("process not started".to_string()),
         }
+    }
+
+    /// Local optimistic bump used by `send_prompt` until `get_state` syncs.
+    pub fn bump_message_count(&mut self) {
+        self.status.message_count = self.status.message_count.saturating_add(1);
     }
 
     pub async fn kill(&mut self) {

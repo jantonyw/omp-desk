@@ -81,12 +81,21 @@
         <section id="pane-chat" aria-label="Chat">
           <main id="transcript"></main>
           <footer id="composer-bar">
-            <textarea
-              id="composer"
-              placeholder="Ask omp… (Enter to send, Shift+Enter for newline)"
-              rows="3"
-              spellcheck="false"
-            ></textarea>
+            <div class="composer-wrap">
+              <div
+                id="slash-palette"
+                class="slash-palette hidden"
+                role="listbox"
+                aria-label="Slash commands"
+                aria-hidden="true"
+              ></div>
+              <textarea
+                id="composer"
+                placeholder="Ask omp… (/ for commands · Enter send · Shift+Enter newline)"
+                rows="3"
+                spellcheck="false"
+              ></textarea>
+            </div>
             <div class="composer-actions">
               <button id="send" type="button" disabled>Send</button>
               <button id="abort" type="button" disabled>Abort</button>

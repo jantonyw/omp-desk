@@ -4,8 +4,12 @@ import {
   clearChangedFiles,
   clearPlanTasks,
   clearTranscript,
+  EXECUTE_PREFIX,
+  fetchAvailableCommands,
   fetchAvailableModels,
+  fetchSessionState,
   formatModelRef,
+  getAvailableCommandsCache,
   getAvailableModelsCache,
   getChangedFiles,
   getEntries,
@@ -14,24 +18,60 @@ import {
   getStatus,
   handleEvent,
   onChangesChange,
+  onCommandsChange,
   onModelsChange,
   onPlanTasksChange,
   onTranscriptChange,
   parsePlanSteps,
+  PLAN_PREFIX,
   promptOrAbortAndPrompt,
   sendPrompt,
   setModel,
   setPlanTasks,
   startSession,
   stopSession,
+  stripMarkdownEmphasis,
   subscribeEvents,
   togglePlanTask,
   type BoundModel,
+  type RpcAvailableSlashCommand,
   type Settings,
   type Status,
 } from "./client";
 import { homeDir } from "@tauri-apps/api/path";
 import type { RpcEventPayload } from "./protocol";
+import { marked } from "marked";
+import DOMPurify from "dompurify";
+
+// --- Markdown --------------------------------------------------------------
+
+marked.setOptions({ gfm: true, breaks: true });
+
+const MD_TAGS = [
+  "p",
+  "h1",
+  "h2",
+  "h3",
+  "ul",
+  "ol",
+  "li",
+  "pre",
+  "code",
+  "a",
+  "strong",
+  "em",
+  "blockquote",
+  "br",
+  "hr",
+];
+
+function renderMarkdown(text: string): string {
+  const raw = marked.parse(text, { async: false }) as string;
+  return DOMPurify.sanitize(raw, {
+    ALLOWED_TAGS: MD_TAGS,
+    ALLOWED_ATTR: ["href", "title", "target", "rel", "class"],
+  });
+}
 
 // --- DOM -------------------------------------------------------------------
 
@@ -54,6 +94,7 @@ const clearChangesBtn = document.getElementById("clear-changes") as HTMLButtonEl
 const sessionStateEl = document.getElementById("session-state")!;
 const sessionCwdEl = document.getElementById("session-cwd")!;
 const sessionMetaEl = document.getElementById("session-meta")!;
+const slashPaletteEl = document.getElementById("slash-palette")!;
 
 const ompPathEl = document.getElementById("omp-path") as HTMLInputElement;
 const cwdEl = document.getElementById("cwd") as HTMLInputElement;
@@ -84,6 +125,10 @@ let lastPlanText = "";
 let selectingModel = false;
 let activeModelRef = "";
 
+/** Slash palette highlight index; -1 when closed. */
+let slashIndex = -1;
+let slashFiltered: RpcAvailableSlashCommand[] = [];
+
 const SETTINGS_KEY = "omp-desk.settings";
 const UI_KEY = "omp-desk.ui";
 
@@ -96,17 +141,10 @@ const UI_KEY = "omp-desk.ui";
  *   Plan/Execute in this shell therefore uses `prompt` / `abort_and_prompt`
  *   with explicit planning vs execution instructions, then user confirm.
  */
-const PLAN_PREFIX =
-  "[omp-desk Plan mode] Produce a concrete implementation plan only. " +
-  "Do not edit, write, or delete files. Do not run mutating shell commands. " +
-  "Respond with a short overview and a numbered list of steps.\n\n";
-
-const EXECUTE_PREFIX =
-  "[omp-desk Execute mode] Implement the approved plan below. " +
-  "Apply the code changes and mark progress. Follow the steps in order.\n\n";
 
 const homeCwdPromise: Promise<string> = homeDir().catch(() => "/workspace");
 const LEGACY_DEFAULT_MODEL = "deepseek/deepseek-v4-pro";
+const ROLE_LABELS = new Set(["default", "smol", "slow", "plan"]);
 
 function defaultSettings(): Settings {
   return {
@@ -208,7 +246,10 @@ function renderTranscript(): void {
         ? `<div class="tooltag">${escapeHtml(e.toolName)}</div>`
         : "";
       const cls = e.streaming ? "msg assistant streaming" : "msg assistant";
-      html += `<div class="${cls}" data-id="${e.id}"><div class="role">omp</div>${tool}<div class="body">${escapeHtml(e.text)}</div>${thinking}</div>`;
+      const body = e.streaming && !e.text.trim()
+        ? ""
+        : renderMarkdown(e.text || "");
+      html += `<div class="${cls}" data-id="${e.id}"><div class="role">omp</div>${tool}<div class="body md">${body}</div>${thinking}</div>`;
     } else if (e.role === "tool") {
       const cls = e.isError ? "msg tool error" : "msg tool";
       html += `<div class="${cls}"><div class="role">tool</div><div class="body">${escapeHtml(e.text)}</div></div>`;
@@ -237,6 +278,7 @@ function renderStatus(): void {
     parts.push(workMode === "plan" ? "mode:plan" : "mode:execute");
   }
   statusBarEl.textContent = parts.join(" · ");
+  statusBarEl.title = parts.join(" · ");
 
   const canSend = status.ready;
   sendBtn.disabled = !canSend;
@@ -261,18 +303,56 @@ function renderStatus(): void {
   sessionCwdEl.title = settings.cwd;
   const meta: string[] = [];
   if (status.pid != null) meta.push(`pid ${status.pid}`);
-  if (activeModelRef || status.model) meta.push(activeModelRef || status.model || "");
+  const fullModel = activeModelRef || status.model || "";
+  if (fullModel) meta.push(fullModel);
   sessionMetaEl.textContent = meta.filter(Boolean).join(" · ");
+  sessionMetaEl.title = fullModel;
+}
+
+/** Collect optional default/smol/slow/plan labels if present on the model object. */
+function modelRoleAnnotation(m: BoundModel): string {
+  const found: string[] = [];
+  const push = (v: unknown) => {
+    if (typeof v !== "string") return;
+    const low = v.toLowerCase();
+    if (ROLE_LABELS.has(low)) found.push(low);
+  };
+  push(m.role);
+  for (const r of m.roles ?? []) push(r);
+  for (const t of m.tags ?? []) push(t);
+  const extra = m as BoundModel & Record<string, unknown>;
+  for (const key of ROLE_LABELS) {
+    if (extra[key] === true) found.push(key);
+  }
+  return [...new Set(found)].join(", ");
 }
 
 function renderModelSelect(models: BoundModel[], selectedRef: string): void {
   const current = modelSelectEl.value;
   const prefer = selectedRef || current || settings.model || "";
-  let html = `<option value="">omp default</option>`;
+
+  const byProvider = new Map<string, BoundModel[]>();
   for (const m of models) {
-    const ref = formatModelRef(m);
-    const label = m.name && m.name !== m.id ? `${ref} — ${m.name}` : ref;
-    html += `<option value="${escapeHtml(ref)}" data-provider="${escapeHtml(m.provider)}" data-id="${escapeHtml(m.id)}">${escapeHtml(label)}</option>`;
+    const p = m.provider || "unknown";
+    const list = byProvider.get(p);
+    if (list) list.push(m);
+    else byProvider.set(p, [m]);
+  }
+
+  let html = `<option value="">omp default</option>`;
+  const providers = [...byProvider.keys()].sort((a, b) => a.localeCompare(b));
+  for (const provider of providers) {
+    html += `<optgroup label="${escapeHtml(provider)}">`;
+    const group = byProvider.get(provider)!;
+    group.sort((a, b) => a.id.localeCompare(b.id));
+    for (const m of group) {
+      const ref = formatModelRef(m);
+      const role = modelRoleAnnotation(m);
+      // Always show full provider/id — never a truncated display name.
+      const label = role ? `${ref} (${role})` : ref;
+      html += `<option value="${escapeHtml(ref)}" data-provider="${escapeHtml(m.provider)}" data-id="${escapeHtml(m.id)}">${escapeHtml(label)}</option>`;
+    }
+    html += `</optgroup>`;
   }
   modelSelectEl.innerHTML = html;
   if (prefer && [...modelSelectEl.options].some((o) => o.value === prefer)) {
@@ -280,6 +360,7 @@ function renderModelSelect(models: BoundModel[], selectedRef: string): void {
   } else {
     modelSelectEl.value = "";
   }
+  modelSelectEl.title = modelSelectEl.value || "omp default";
 }
 
 function renderChanges(): void {
@@ -305,12 +386,14 @@ function renderTasks(): void {
     return;
   }
   tasksListEl.innerHTML = tasks
-    .map(
-      (t) =>
+    .map((t) => {
+      const label = stripMarkdownEmphasis(t.text);
+      return (
         `<li class="${t.done ? "done" : ""}" data-id="${escapeHtml(t.id)}">` +
         `<input type="checkbox" ${t.done ? "checked" : ""} aria-label="toggle step" />` +
-        `<span>${escapeHtml(t.text)}</span></li>`,
-    )
+        `<span>${escapeHtml(label)}</span></li>`
+      );
+    })
     .join("");
 }
 
@@ -324,7 +407,114 @@ function setWorkMode(mode: WorkMode): void {
   renderStatus();
 }
 
+// --- Slash palette ---------------------------------------------------------
+
+function isSlashMode(text: string): boolean {
+  return text.startsWith("/");
+}
+
+function filterCommands(query: string): RpcAvailableSlashCommand[] {
+  const q = query.replace(/^\//, "").toLowerCase();
+  const all = getAvailableCommandsCache();
+  if (!q) return all.slice(0, 40);
+  return all
+    .filter((c) => {
+      if (c.name.toLowerCase().includes(q)) return true;
+      if ((c.aliases ?? []).some((a) => a.toLowerCase().includes(q))) return true;
+      if ((c.description ?? "").toLowerCase().includes(q)) return true;
+      return false;
+    })
+    .slice(0, 40);
+}
+
+function hideSlashPalette(): void {
+  slashIndex = -1;
+  slashFiltered = [];
+  slashPaletteEl.classList.add("hidden");
+  slashPaletteEl.innerHTML = "";
+  slashPaletteEl.setAttribute("aria-hidden", "true");
+}
+
+function renderSlashPalette(): void {
+  const text = composerEl.value;
+  if (!isSlashMode(text) || text.includes("\n")) {
+    hideSlashPalette();
+    return;
+  }
+  // Only suggest while the first token is being typed (before args settle oddly).
+  const firstSpace = text.indexOf(" ");
+  const query = firstSpace === -1 ? text : text.slice(0, firstSpace);
+  // If user already typed args after a known full command name, hide.
+  if (firstSpace !== -1) {
+    hideSlashPalette();
+    return;
+  }
+
+  slashFiltered = filterCommands(query);
+  if (slashFiltered.length === 0) {
+    hideSlashPalette();
+    return;
+  }
+  if (slashIndex < 0 || slashIndex >= slashFiltered.length) slashIndex = 0;
+
+  slashPaletteEl.innerHTML = slashFiltered
+    .map((c, i) => {
+      const aliases = (c.aliases ?? []).length
+        ? `<span class="slash-alias">${escapeHtml((c.aliases ?? []).map((a) => `/${a}`).join(" "))}</span>`
+        : "";
+      const desc = c.description
+        ? `<span class="slash-desc">${escapeHtml(c.description)}</span>`
+        : "";
+      const hint = c.input?.hint
+        ? `<span class="slash-hint">${escapeHtml(c.input.hint)}</span>`
+        : "";
+      const active = i === slashIndex ? " active" : "";
+      return (
+        `<button type="button" class="slash-item${active}" data-index="${i}" role="option" aria-selected="${
+          i === slashIndex ? "true" : "false"
+        }">` +
+        `<span class="slash-name">/${escapeHtml(c.name)}</span>${aliases}${desc}${hint}` +
+        `</button>`
+      );
+    })
+    .join("");
+  slashPaletteEl.classList.remove("hidden");
+  slashPaletteEl.setAttribute("aria-hidden", "false");
+}
+
+function insertSlashCommand(cmd: RpcAvailableSlashCommand): void {
+  const hint = cmd.input?.hint ? " " : "";
+  composerEl.value = `/${cmd.name}${hint}`;
+  hideSlashPalette();
+  composerEl.focus();
+  const len = composerEl.value.length;
+  composerEl.setSelectionRange(len, len);
+}
+
+function slashPaletteOpen(): boolean {
+  return !slashPaletteEl.classList.contains("hidden") && slashFiltered.length > 0;
+}
+
 // --- Actions ---------------------------------------------------------------
+
+async function refreshMessageCount(): Promise<void> {
+  try {
+    await fetchSessionState();
+    const st = await getStatus();
+    // Prefer the higher of local optimistic count vs omp get_state so a race
+    // right after send does not flash back to 0.
+    status = {
+      ...st,
+      message_count: Math.max(st.message_count || 0, status.message_count || 0),
+    };
+    if (st.model) {
+      activeModelRef = st.model.includes("/") ? st.model : activeModelRef || st.model;
+    }
+    renderStatus();
+  } catch {
+    // get_state may fail mid-exit; keep last known count.
+  }
+}
 
 async function doStart(forceModel?: string): Promise<void> {
   const s = await readSettingsForm();
@@ -337,6 +527,7 @@ async function doStart(forceModel?: string): Promise<void> {
   lastPlanText = "";
   activeModelRef = s.model;
   availableModelsReset();
+  hideSlashPalette();
   try {
     status = await startSession(s);
   } catch (err) {
@@ -361,12 +552,10 @@ function appendSystem(text: string): void {
 async function onReadyLoadModels(): Promise<void> {
   try {
     const models = await fetchAvailableModels();
-    // Prefer live status.model / settings after ready.
     const st = await getStatus();
     status = st;
     if (st.model) activeModelRef = st.model;
     renderModelSelect(models, activeModelRef);
-    // If settings.model is set and present, highlight it; set_model if mismatch.
     if (settings.model) {
       const match = models.find((m) => formatModelRef(m) === settings.model);
       if (match && activeModelRef !== settings.model) {
@@ -382,6 +571,12 @@ async function onReadyLoadModels(): Promise<void> {
   } catch (err) {
     appendSystem(`[models] ${String(err)}`);
   }
+  try {
+    await fetchAvailableCommands();
+  } catch (err) {
+    appendSystem(`[commands] ${String(err)}`);
+  }
+  await refreshMessageCount();
   renderStatus();
 }
 
@@ -389,6 +584,7 @@ async function onModelPick(): Promise<void> {
   if (!status.ready || selectingModel) return;
   const opt = modelSelectEl.selectedOptions[0];
   const ref = modelSelectEl.value;
+  modelSelectEl.title = ref || "omp default";
   if (!ref) {
     // Empty = follow omp default for *next* spawn; do not invent a clear_model RPC.
     settings.model = "";
@@ -415,7 +611,6 @@ async function onModelPick(): Promise<void> {
     status = await getStatus().catch(() => status);
     if (status.model) activeModelRef = status.model.includes("/") ? status.model : activeModelRef;
   } catch (err) {
-    // Keep previous selection on failure.
     renderModelSelect(getAvailableModelsCache(), previous);
     appendSystem(`[set_model failed] ${String(err)}`);
   } finally {
@@ -428,32 +623,55 @@ function capturePlanFromTranscript(): void {
   const text = getLastAssistantText();
   if (!text.trim()) return;
   lastPlanText = text;
-  const steps = parsePlanSteps(text);
+  const steps = parsePlanSteps(text).map((t) => ({
+    ...t,
+    text: stripMarkdownEmphasis(t.text),
+  }));
   if (steps.length > 0) setPlanTasks(steps);
   renderTasks();
+  renderStatus();
+}
+
+function bumpMessageCount(): void {
+  status = { ...status, message_count: (status.message_count || 0) + 1 };
   renderStatus();
 }
 
 function onSend(): void {
   const text = composerEl.value;
   if (!text.trim()) return;
+  if (slashPaletteOpen()) {
+    // Enter while palette open inserts; actual send is a second Enter.
+    const cmd = slashFiltered[slashIndex] ?? slashFiltered[0];
+    if (cmd) insertSlashCommand(cmd);
+    return;
+  }
   composerEl.value = "";
+  hideSlashPalette();
+
+  const isSlash = text.trimStart().startsWith("/");
+
+  // Slash lines always go through existing prompt path with no Plan/Execute prefix.
+  if (isSlash) {
+    appendUser(text);
+    bumpMessageCount();
+    void promptOrAbortAndPrompt(text, status.is_streaming).catch((err) =>
+      appendSystem(`[send failed] ${String(err)}`),
+    );
+    return;
+  }
 
   if (workMode === "plan") {
     const payload = PLAN_PREFIX + text;
     appendUser(text);
-    void sendPrompt(payload)
-      .then(() => {
-        // Steps captured on agent_end via onRpcEvent.
-      })
-      .catch((err) => appendSystem(`[send failed] ${String(err)}`));
+    bumpMessageCount();
+    void sendPrompt(payload).catch((err) => appendSystem(`[send failed] ${String(err)}`));
     return;
   }
 
-  // Execute mode from composer: still require an approved plan path via Confirm,
-  // or send as a normal prompt if user insists while in Execute without plan.
   if (!lastPlanText.trim()) {
     appendUser(text);
+    bumpMessageCount();
     void sendPrompt(text).catch((err) => appendSystem(`[send failed] ${String(err)}`));
     return;
   }
@@ -465,8 +683,11 @@ function onSend(): void {
     return;
   }
   appendUser(text);
-  void promptOrAbortAndPrompt(EXECUTE_PREFIX + text + "\n\nApproved plan:\n" + lastPlanText, status.is_streaming)
-    .catch((err) => appendSystem(`[send failed] ${String(err)}`));
+  bumpMessageCount();
+  void promptOrAbortAndPrompt(
+    EXECUTE_PREFIX + text + "\n\nApproved plan:\n" + lastPlanText,
+    status.is_streaming,
+  ).catch((err) => appendSystem(`[send failed] ${String(err)}`));
 }
 
 async function onConfirmExecute(): Promise<void> {
@@ -487,6 +708,7 @@ async function onConfirmExecute(): Promise<void> {
       ? "\n\nSteps:\n" + getPlanTasks().map((t, i) => `${i + 1}. ${t.text}`).join("\n")
       : "");
   appendUser("Execute approved plan");
+  bumpMessageCount();
   try {
     await promptOrAbortAndPrompt(message, status.is_streaming);
   } catch (err) {
@@ -512,11 +734,16 @@ function onRpcEvent(ev: RpcEventPayload): void {
       renderStatus();
     });
     modelSelectEl.disabled = true;
+    hideSlashPalette();
   }
 
   if (ev.kind === "response") {
     const f = ev.frame as { command?: string; success?: boolean; data?: unknown } | undefined;
-    if (f?.command === "get_state" || f?.command === "set_model" || f?.command === "cycle_model") {
+    if (
+      f?.command === "get_state" ||
+      f?.command === "set_model" ||
+      f?.command === "cycle_model"
+    ) {
       void getStatus().then((s) => {
         status = s;
         if (s.model) activeModelRef = s.model.includes("/") ? s.model : activeModelRef || s.model;
@@ -536,12 +763,8 @@ function onRpcEvent(ev: RpcEventPayload): void {
   if (ev.kind === "event") {
     const f = ev.frame as { type?: string } | undefined;
     if (f?.type === "agent_end") {
-      void getStatus().then((s) => {
-        status = s;
-        renderStatus();
-      });
+      void refreshMessageCount();
       if (workMode === "plan") {
-        // Defer so finalizeAssistant has run inside handleEvent.
         queueMicrotask(() => capturePlanFromTranscript());
       }
     }
@@ -550,6 +773,12 @@ function onRpcEvent(ev: RpcEventPayload): void {
         status = s;
         renderStatus();
       });
+    }
+    if (f?.type === "available_commands_update") {
+      renderSlashPalette();
+    }
+    if (f?.type === "session_info_update" || f?.type === "config_update") {
+      void refreshMessageCount();
     }
   }
 }
@@ -613,7 +842,55 @@ tasksListEl.addEventListener("change", (e) => {
   }
 });
 
+slashPaletteEl.addEventListener("mousedown", (e) => {
+  // Prevent composer blur before click inserts.
+  e.preventDefault();
+});
+slashPaletteEl.addEventListener("click", (e) => {
+  const btn = (e.target as HTMLElement).closest(".slash-item") as HTMLElement | null;
+  if (!btn) return;
+  const idx = Number(btn.dataset.index);
+  const cmd = slashFiltered[idx];
+  if (cmd) insertSlashCommand(cmd);
+});
+
+composerEl.addEventListener("input", () => {
+  renderSlashPalette();
+});
+
 composerEl.addEventListener("keydown", (e: KeyboardEvent) => {
+  if (slashPaletteOpen()) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      slashIndex = (slashIndex + 1) % slashFiltered.length;
+      renderSlashPalette();
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      slashIndex = (slashIndex - 1 + slashFiltered.length) % slashFiltered.length;
+      renderSlashPalette();
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      hideSlashPalette();
+      return;
+    }
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      const cmd = slashFiltered[slashIndex] ?? slashFiltered[0];
+      if (cmd) insertSlashCommand(cmd);
+      return;
+    }
+    if (e.key === "Tab") {
+      e.preventDefault();
+      const cmd = slashFiltered[slashIndex] ?? slashFiltered[0];
+      if (cmd) insertSlashCommand(cmd);
+      return;
+    }
+  }
+
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     onSend();
@@ -625,6 +902,9 @@ onChangesChange(renderChanges);
 onPlanTasksChange(renderTasks);
 onModelsChange(() => {
   renderModelSelect(getAvailableModelsCache(), activeModelRef || modelSelectEl.value);
+});
+onCommandsChange(() => {
+  if (isSlashMode(composerEl.value)) renderSlashPalette();
 });
 
 // Boot
