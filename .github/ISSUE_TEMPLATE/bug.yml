@@ -1,0 +1,43 @@
+name: Bug report
+description: Something is broken in omp-desk
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: Short description of the bug.
+      placeholder: e.g. Model chips stay disabled after ready…
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. …
+        2. …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: Environment
+      placeholder: "OS · bun · rustc · omp version (if known)"
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I did not paste API keys or secrets into this issue
+          required: true
+        - label: This is about omp-desk (UI/shell), not a request to change omp core here
+          required: true

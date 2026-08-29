@@ -1,5 +1,7 @@
 # omp-desk
 
+[![CI](https://github.com/jantonyw/omp-desk/actions/workflows/ci.yml/badge.svg)](https://github.com/jantonyw/omp-desk/actions)
+
 围绕 [`omp`](https://github.com/oh-my-pi/oh-my-pi) 编程智能体构建的 Tauri 2 桌面外壳。
 
 omp-desk **只是一个 UI + 进程管理器**。它启动 `omp --mode rpc-ui` 并与之通过 stdio 的
@@ -10,13 +12,18 @@ English: [README.md](README.md).
 
 ## 界面
 
-暗色、紧凑的 Codex 风格三栏工作室（默认 **1200×760**，1280×800 可用；输入框始终可见）：
+以对话为中心的三栏工作室（默认 **1200×760**；输入区始终可达）：
 
-- **左栏** — 会话状态、cwd、新建 / 停止
-- **中栏** — 对话记录 + 输入框
-- **右栏** — Changes（来自 tool 事件）、计划 Tasks、Run / Abort
+- **左栏** — 会话行（状态、cwd）、新建对话 / 停止
+- **中栏** — Plan/Execute **下划线标签**、欢迎页或 markdown 对话、输入框
+- **右栏** — Changes（来自 tool 事件）、计划 Tasks、Confirm execute、Run 操作
 
-顶栏：**Plan / Execute** 切换，以及**已绑定模型下拉**（`get_available_models` / `set_model`）。
+顶栏：**模型 chips/标签**（`get_available_models` / `set_model`，下拉为回退），以及
+**主题**：Dark / Midnight / Light / System。
+
+输入框：键入 **`/`** 打开可过滤的斜杠命令面板（`get_available_commands`）。
+助手回复以 **markdown** 渲染。长会话有 **内存上限**（对话约 200 条
+user/assistant/tool；Changes 约 100），避免 WebView 无限膨胀。
 
 ## 环境要求
 
@@ -56,9 +63,12 @@ bun run build          # 仅前端（tsc + vite）
 cd src-tauri && cargo check
 ```
 
+CI（[Actions](https://github.com/jantonyw/omp-desk/actions)）跑 `bun run build` 与
+`cargo check`，不打包完整 Tauri bundle。
+
 ## 模型选择
 
-会话 **ready** 后，外壳调用真实 RPC `get_available_models` 填充下拉框；选中后发送
+会话 **ready** 后，外壳调用真实 RPC `get_available_models` 填充模型 chips；选中后发送
 `set_model`（`provider` + `modelId`）。空选项表示**启动时不加 `--model`**，沿用
 `~/.omp` / agent 配置。请勿把 API 密钥粘贴进 omp-desk。
 
@@ -66,9 +76,17 @@ cd src-tauri && cargo check
 
 - **Plan** — 以只读规划指令发送 prompt，步骤解析到右侧 Tasks。omp CLI 另有
   `--plan <model>`（规划模型）与 `--plan-yolo`（无头：规划→自动批准→执行）；需要时可在
-  Settings → extra args 传入。rpc-types.ts 中没有可臆造的 `plan_mode` 命令。
+  Settings → extra args 传入。`src/protocol.ts` 中没有可臆造的 `plan_mode` 命令。
 - **Execute** — 有计划后点 **Confirm execute**（或在 Execute 模式下发送）；外壳会先确认，
   再通过 `prompt` / `abort_and_prompt` 把计划交回 omp 执行。
+
+## 贡献与安全
+
+贡献流程、bun 用法与「只做外壳、不臆造 RPC」等约定见英文
+[CONTRIBUTING.md](CONTRIBUTING.md)。安全与凭据说明见 [SECURITY.md](SECURITY.md)。
+行为准则：[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。
+
+OpenSpec 计划在 `openspec/`（小型纯文档 PR 可不强制）。
 
 ## 关于 Rust 工具链的说明
 
