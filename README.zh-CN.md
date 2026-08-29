@@ -3,18 +3,25 @@
 围绕 [`omp`](https://github.com/oh-my-pi/oh-my-pi) 编程智能体构建的 Tauri 2 桌面外壳。
 
 omp-desk **只是一个 UI + 进程管理器**。它启动 `omp --mode rpc-ui` 并与之通过 stdio 的
-JSONL RPC 协议通信。智能体本身、工具、模型提供商、LSP、hashline 以及 DeepSeek 客户端
+JSONL RPC 协议通信。智能体本身、工具、模型提供商、LSP、hashline 以及模型客户端
 全部位于 `omp` 内部——本项目没有重写其中任何一部分。
+
+English: [README.md](README.md).
 
 ## 界面
 
-暗色、紧凑的单窗口：对话记录 · 输入框（Enter 发送，Shift+Enter 换行）· 状态栏 ·
-`omp` 路径 / 工作目录 / 模型 的设置面板。
+暗色、紧凑的 Codex 风格三栏工作室（默认 **1200×760**，1280×800 可用；输入框始终可见）：
+
+- **左栏** — 会话状态、cwd、新建 / 停止
+- **中栏** — 对话记录 + 输入框
+- **右栏** — Changes（来自 tool 事件）、计划 Tasks、Run / Abort
+
+顶栏：**Plan / Execute** 切换，以及**已绑定模型下拉**（`get_available_models` / `set_model`）。
 
 ## 环境要求
 
 - [Rust](https://rustup.rs)（仓库为 rustc **1.85** 锁定了依赖版本，见下文）
-- [Node.js](https://nodejs.org) ≥ 20 与 npm
+- [Bun](https://bun.sh)（包管理器，不用 npm）
 - `omp` 已在 `PATH` 中（或在设置里填写绝对路径）
 
 ### Linux 系统依赖
@@ -37,9 +44,10 @@ sudo dnf install webkit2gtk4.1-devel gtk3-devel pkgconf openssl-devel
 ## 构建与运行
 
 ```bash
-npm install
-npm run tauri dev      # 开发模式（Vite 开发服务器 + Tauri 窗口）
-npm run tauri build    # 生成发布产物
+bun install
+bun run tauri dev      # Vite + Tauri 窗口
+bun run tauri build    # 发布产物
+bun run build          # 仅前端（tsc + vite）
 ```
 
 单独的 `cargo check`：
@@ -47,6 +55,20 @@ npm run tauri build    # 生成发布产物
 ```bash
 cd src-tauri && cargo check
 ```
+
+## 模型选择
+
+会话 **ready** 后，外壳调用真实 RPC `get_available_models` 填充下拉框；选中后发送
+`set_model`（`provider` + `modelId`）。空选项表示**启动时不加 `--model`**，沿用
+`~/.omp` / agent 配置。请勿把 API 密钥粘贴进 omp-desk。
+
+## Plan / Execute
+
+- **Plan** — 以只读规划指令发送 prompt，步骤解析到右侧 Tasks。omp CLI 另有
+  `--plan <model>`（规划模型）与 `--plan-yolo`（无头：规划→自动批准→执行）；需要时可在
+  Settings → extra args 传入。rpc-types.ts 中没有可臆造的 `plan_mode` 命令。
+- **Execute** — 有计划后点 **Confirm execute**（或在 Execute 模式下发送）；外壳会先确认，
+  再通过 `prompt` / `abort_and_prompt` 把计划交回 omp 执行。
 
 ## 关于 Rust 工具链的说明
 
@@ -77,7 +99,7 @@ idna_adapter = "=1.0.0"
 3. Tauri 命令桥接 UI 与子进程：`start_session`、`send_prompt`、`abort`、
    `send_command`、`get_status`、`stop_session`、`respond_extension_ui`、`open_url`。
 4. 窗口（`src/main.ts` + `src/client.ts`）将 `message_update` / `agent_start` /
-   `agent_end` / `tool_execution_*` 帧归约为实时对话记录。
+   `agent_end` / `tool_execution_*` 帧归约为实时对话、Changes 列表与计划 Tasks。
 
 ### 扩展 UI 请求
 
@@ -87,11 +109,11 @@ idna_adapter = "=1.0.0"
 
 ## 设置
 
-默认值:`omp` 路径为 `omp`,cwd 为 `/workspace`,模型为空(沿用本地 `omp` CLI
-配置的模型)。
-当 `/workspace` 不存在时(典型的 macOS/Windows 桌面环境),cwd 会回退到用户主目录,
-无需改设置即可启动。模型选择保存在 `localStorage` 中并在重启时重新应用;`omp` 自身的
-配置仍持有实际的提供商凭据与模型角色(`~/.omp/agent/config.yml`)。
+默认值：`omp` 路径为 `omp`，cwd 为 `/workspace`，模型为空（沿用本地 `omp` CLI
+配置的模型）。
+当 `/workspace` 不存在时（典型的 macOS/Windows 桌面环境），cwd 会回退到用户主目录，
+无需改设置即可启动。模型选择保存在 `localStorage` 中并在重启时重新应用；`omp` 自身的
+配置仍持有实际的提供商凭据与模型角色（`~/.omp/agent/config.yml`）。
 **请勿将 API 密钥粘贴到此处。**
 
 ## 许可证

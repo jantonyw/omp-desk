@@ -2,20 +2,40 @@
  * RPC protocol client for the `omp --mode rpc-ui` stdio JSONL protocol.
  *
  * This mirrors the wire contract in `oh-my-pi/packages/coding-agent/src/modes/rpc/rpc-types.ts`.
- * It only speaks the protocol surface the shell needs: start, prompt, abort,
- * status, and the stdout event stream.
+ * Command names are taken from that file — never invent RPC commands.
  */
 
-/** Command shapes (stdin). Mirror of rpc-types.ts `RpcCommand`. */
+/** Bound model entry from `get_available_models` (pi-catalog `Model`). */
+export interface BoundModel {
+  id: string;
+  name: string;
+  provider: string;
+  api?: string;
+  baseUrl?: string;
+  reasoning?: boolean;
+}
+
+/** Command shapes (stdin). Mirror of rpc-types.ts `RpcCommand` (subset we use). */
 export type RpcCommand =
   | { id?: string; type: "negotiate_protocol"; protocolVersion: number }
   | { id?: string; type: "prompt"; message: string; images?: ImageContent[] }
+  | { id?: string; type: "steer"; message: string; images?: ImageContent[] }
+  | { id?: string; type: "follow_up"; message: string; images?: ImageContent[] }
   | { id?: string; type: "abort" }
+  | { id?: string; type: "abort_and_prompt"; message: string; images?: ImageContent[] }
   | { id?: string; type: "new_session"; parentSession?: string }
   | { id?: string; type: "get_state" }
   | { id?: string; type: "set_model"; provider: string; modelId: string }
+  | { id?: string; type: "cycle_model" }
+  | { id?: string; type: "get_available_models" }
+  | { id?: string; type: "set_todos"; phases: TodoPhase[] }
   | { id?: string; type: "get_messages" }
   | { id?: string; type: "get_messages_page"; cursor?: string; limit?: number };
+
+export interface TodoPhase {
+  name?: string;
+  todos?: Array<{ id?: string; content?: string; status?: string }>;
+}
 
 export interface ImageContent {
   type: "image";
@@ -35,7 +55,7 @@ export interface RpcResponse {
 
 /** Session state returned by `get_state`. */
 export interface SessionState {
-  model?: { provider: string; id: string };
+  model?: BoundModel;
   thinkingLevel?: string;
   isStreaming: boolean;
   isCompacting: boolean;
@@ -49,13 +69,25 @@ export interface SessionState {
   tokensPerSecond: number | null;
   messageCount: number;
   queuedMessageCount: number;
+  todoPhases?: TodoPhase[];
 }
 
 /** Extension UI request emitted by the agent. */
 export interface ExtensionUiRequest {
   type: "extension_ui_request";
   id: string;
-  method: "select" | "confirm" | "input" | "editor" | "cancel" | "notify" | "setStatus" | "setWidget" | "setTitle" | "set_editor_text" | "open_url";
+  method:
+    | "select"
+    | "confirm"
+    | "input"
+    | "editor"
+    | "cancel"
+    | "notify"
+    | "setStatus"
+    | "setWidget"
+    | "setTitle"
+    | "set_editor_text"
+    | "open_url";
   title?: string;
   message?: string;
   placeholder?: string;
@@ -111,4 +143,10 @@ export interface RpcEventPayload {
   text?: string;
   code?: number;
   message?: string;
+}
+
+/** Format a bound model as `provider/id` for display and `--model`. */
+export function formatModelRef(m: Pick<BoundModel, "provider" | "id"> | null | undefined): string {
+  if (!m?.provider || !m?.id) return "";
+  return `${m.provider}/${m.id}`;
 }

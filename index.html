@@ -10,10 +10,20 @@
     <div id="app">
       <header id="topbar">
         <span class="brand">omp-desk</span>
+        <div class="topbar-center">
+          <label class="mode-toggle" title="Plan then Execute">
+            <button type="button" id="mode-plan" class="mode-btn active" aria-pressed="true">Plan</button>
+            <button type="button" id="mode-execute" class="mode-btn" aria-pressed="false">Execute</button>
+          </label>
+          <label class="model-picker">
+            <span class="sr-only">Model</span>
+            <select id="model-select" disabled title="Bound models from omp get_available_models">
+              <option value="">omp default</option>
+            </select>
+          </label>
+        </div>
         <div class="topbar-actions">
-          <button id="new-session">New session</button>
-          <button id="abort" disabled>Abort</button>
-          <button id="settings-toggle">Settings</button>
+          <button id="settings-toggle" type="button">Settings</button>
         </div>
       </header>
 
@@ -27,8 +37,13 @@
           <input id="cwd" type="text" spellcheck="false" />
         </div>
         <div class="row">
-          <label>model</label>
-          <input id="model" type="text" spellcheck="false" />
+          <label>spawn model</label>
+          <input
+            id="model"
+            type="text"
+            spellcheck="false"
+            placeholder="empty = omit --model (omp config default)"
+          />
         </div>
         <div class="row checks">
           <label><input id="no-session" type="checkbox" /> no-session</label>
@@ -37,24 +52,76 @@
         </div>
         <div class="row">
           <label>extra args</label>
-          <input id="extra-args" type="text" spellcheck="false" />
+          <input
+            id="extra-args"
+            type="text"
+            spellcheck="false"
+            placeholder="e.g. --plan-yolo (real omp flag)"
+          />
         </div>
         <div class="row">
-          <button id="apply-settings">Apply &amp; restart</button>
+          <button id="apply-settings" type="button">Apply &amp; restart</button>
         </div>
       </section>
 
-      <main id="transcript"></main>
+      <div id="studio">
+        <aside id="pane-sessions" aria-label="Sessions">
+          <div class="pane-title">Sessions</div>
+          <div id="session-card" class="session-card">
+            <div id="session-state" class="session-state">not started</div>
+            <div id="session-cwd" class="session-cwd" title=""></div>
+            <div id="session-meta" class="session-meta"></div>
+          </div>
+          <div class="pane-actions">
+            <button id="new-session" type="button">New session</button>
+            <button id="stop-session" type="button">Stop</button>
+          </div>
+        </aside>
 
-      <footer id="composer-bar">
-        <textarea
-          id="composer"
-          placeholder="Ask omp… (Enter to send, Shift+Enter for newline)"
-          rows="3"
-          spellcheck="false"
-        ></textarea>
-        <button id="send" disabled>Send</button>
-      </footer>
+        <section id="pane-chat" aria-label="Chat">
+          <main id="transcript"></main>
+          <footer id="composer-bar">
+            <textarea
+              id="composer"
+              placeholder="Ask omp… (Enter to send, Shift+Enter for newline)"
+              rows="3"
+              spellcheck="false"
+            ></textarea>
+            <div class="composer-actions">
+              <button id="send" type="button" disabled>Send</button>
+              <button id="abort" type="button" disabled>Abort</button>
+            </div>
+          </footer>
+        </section>
+
+        <aside id="pane-inspector" aria-label="Inspector">
+          <div class="pane-title">Inspector</div>
+
+          <div class="inspector-section">
+            <div class="section-head">
+              <span>Changes</span>
+              <button id="clear-changes" type="button" class="linkish">Clear</button>
+            </div>
+            <ul id="changes-list" class="changes-list"></ul>
+          </div>
+
+          <div class="inspector-section grow">
+            <div class="section-head">
+              <span>Tasks</span>
+              <button id="execute-plan" type="button" class="linkish" disabled>Confirm execute</button>
+            </div>
+            <ul id="tasks-list" class="tasks-list"></ul>
+          </div>
+
+          <div class="inspector-section run-section">
+            <div class="section-head"><span>Run</span></div>
+            <div class="run-actions">
+              <button id="run-new-session" type="button">New session</button>
+              <button id="run-abort" type="button" disabled>Abort</button>
+            </div>
+          </div>
+        </aside>
+      </div>
 
       <div id="status-bar"></div>
     </div>

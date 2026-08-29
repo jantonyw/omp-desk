@@ -119,6 +119,17 @@ fn decode_base64(data: &str) -> Result<Vec<u8>, String> {
         .map_err(|_| "invalid rpc chunk data".to_string())
 }
 
+/// Format a Model JSON object as `provider/id` for status display.
+fn format_model_label(m: &serde_json::Value) -> Option<String> {
+    let id = m.get("id").and_then(|v| v.as_str())?;
+    if let Some(provider) = m.get("provider").and_then(|v| v.as_str()) {
+        if !provider.is_empty() {
+            return Some(format!("{provider}/{id}"));
+        }
+    }
+    Some(id.to_string())
+}
+
 /// Owned struct for the single active omp session.
 pub struct OmpProcess {
     host: Arc<Mutex<Host>>,
@@ -506,8 +517,8 @@ async fn dispatch_frame(
                             guard.status.session_name = Some(sn.to_string());
                         }
                         if let Some(m) = data.get("model") {
-                            if let Some(id) = m.get("id").and_then(|v| v.as_str()) {
-                                guard.status.model = Some(id.to_string());
+                            if let Some(label) = format_model_label(m) {
+                                guard.status.model = Some(label);
                             }
                         }
                         if let Some(streaming) = data.get("isStreaming").and_then(|v| v.as_bool())
@@ -516,6 +527,25 @@ async fn dispatch_frame(
                         }
                         if let Some(mc) = data.get("messageCount").and_then(|v| v.as_u64()) {
                             guard.status.message_count = mc;
+                        }
+                    }
+                } else if cmd == "set_model" {
+                    // `set_model` success data is the Model object itself.
+                    if frame.get("success").and_then(|v| v.as_bool()) == Some(true) {
+                        if let Some(data) = frame.get("data") {
+                            if let Some(label) = format_model_label(data) {
+                                guard.status.model = Some(label);
+                            }
+                        }
+                    }
+                } else if cmd == "cycle_model" {
+                    // `cycle_model` success data is `{ model, thinkingLevel, isScoped }` or null.
+                    if frame.get("success").and_then(|v| v.as_bool()) == Some(true) {
+                        if let Some(data) = frame.get("data") {
+                            let model = data.get("model").unwrap_or(data);
+                            if let Some(label) = format_model_label(model) {
+                                guard.status.model = Some(label);
+                            }
                         }
                     }
                 }
