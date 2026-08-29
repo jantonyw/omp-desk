@@ -76,15 +76,19 @@ function renderMarkdown(text: string): string {
 // --- DOM -------------------------------------------------------------------
 
 const transcriptEl = document.getElementById("transcript")!;
+const paneChatEl = document.getElementById("pane-chat")!;
+const welcomeEl = document.getElementById("welcome")!;
 const composerEl = document.getElementById("composer") as HTMLTextAreaElement;
 const sendBtn = document.getElementById("send") as HTMLButtonElement;
 const abortBtn = document.getElementById("abort") as HTMLButtonElement;
+const slashTriggerBtn = document.getElementById("slash-trigger") as HTMLButtonElement;
 const runAbortBtn = document.getElementById("run-abort") as HTMLButtonElement;
 const newSessionBtn = document.getElementById("new-session") as HTMLButtonElement;
 const runNewSessionBtn = document.getElementById("run-new-session") as HTMLButtonElement;
 const stopSessionBtn = document.getElementById("stop-session") as HTMLButtonElement;
 const statusBarEl = document.getElementById("status-bar")!;
 const modelSelectEl = document.getElementById("model-select") as HTMLSelectElement;
+const modelTabsEl = document.getElementById("model-tabs")!;
 const modePlanBtn = document.getElementById("mode-plan") as HTMLButtonElement;
 const modeExecuteBtn = document.getElementById("mode-execute") as HTMLButtonElement;
 const executePlanBtn = document.getElementById("execute-plan") as HTMLButtonElement;
@@ -268,6 +272,16 @@ function escapeHtml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
+function hasChatMessages(): boolean {
+  return getEntries().some((e) => e.role === "user" || e.role === "assistant");
+}
+
+function updateEmptyChat(): void {
+  const empty = !hasChatMessages();
+  paneChatEl.classList.toggle("empty-chat", empty);
+  welcomeEl.setAttribute("aria-hidden", empty ? "false" : "true");
+}
+
 function renderTranscript(): void {
   const entries = getEntries();
   const atBottom =
@@ -298,35 +312,57 @@ function renderTranscript(): void {
     }
   }
   transcriptEl.innerHTML = html;
+  updateEmptyChat();
   if (atBottom) transcriptEl.scrollTop = transcriptEl.scrollHeight;
 }
 
 function renderStatus(): void {
-  const parts: string[] = [];
+  const modelLabel = activeModelRef || status.model || "omp default";
+  const visible: string[] = [];
+  const fullTip: string[] = [];
+
   if (!status.started) {
-    parts.push("not started");
+    visible.push("not started");
+    fullTip.push("not started");
   } else {
-    parts.push(status.running ? "running" : "stopped");
-    if (status.pid != null) parts.push(`pid ${status.pid}`);
-    if (status.ready) parts.push("ready");
-    if (status.is_streaming) parts.push("streaming");
-    const modelLabel = activeModelRef || status.model || "omp default";
-    parts.push(modelLabel);
-    parts.push(`${status.message_count} msgs`);
-    if (status.session_id) parts.push(`#${status.session_id.slice(0, 8)}`);
-    parts.push(workMode === "plan" ? "mode:plan" : "mode:execute");
+    const state = !status.running
+      ? status.exited
+        ? "exited"
+        : "stopped"
+      : status.is_streaming
+        ? "streaming"
+        : status.ready
+          ? "ready"
+          : "starting…";
+    visible.push(state);
+    fullTip.push(state);
+    if (status.pid != null) fullTip.push(`pid ${status.pid}`);
+    visible.push(modelLabel);
+    fullTip.push(modelLabel);
+    visible.push(`${status.message_count} msgs`);
+    fullTip.push(`${status.message_count} msgs`);
+    if (status.session_id) {
+      const short = `#${status.session_id.slice(0, 8)}`;
+      visible.push(short);
+      fullTip.push(short);
+    }
+    visible.push(workMode === "plan" ? "Plan" : "Execute");
+    fullTip.push(workMode === "plan" ? "mode:plan" : "mode:execute");
   }
-  statusBarEl.textContent = parts.join(" · ");
-  statusBarEl.title = parts.join(" · ");
+  statusBarEl.textContent = visible.join(" · ");
+  statusBarEl.title = fullTip.join(" · ");
 
   const canSend = status.ready;
   sendBtn.disabled = !canSend;
-  abortBtn.disabled = !status.running || !status.is_streaming;
-  runAbortBtn.disabled = abortBtn.disabled;
+  const showAbort = status.running && status.is_streaming;
+  abortBtn.disabled = !showAbort;
+  abortBtn.hidden = !showAbort;
+  runAbortBtn.disabled = !showAbort;
   modelSelectEl.disabled = !status.ready || selectingModel;
+  setModelTabsDisabled(!status.ready || selectingModel);
   executePlanBtn.disabled = !status.ready || !lastPlanText.trim();
 
-  // Left session pane — list-row status pill
+  // Left session pane — Boop row status pill (pid in tooltip only)
   let stateLabel = "starting…";
   if (!status.started) {
     stateLabel = "not started";
@@ -339,14 +375,17 @@ function renderStatus(): void {
   }
   sessionStateEl.textContent = stateLabel;
   sessionStateEl.setAttribute("data-state", stateLabel);
-  sessionCwdEl.textContent = settings.cwd;
+  sessionCwdEl.textContent = settings.cwd || "—";
   sessionCwdEl.title = settings.cwd;
-  const meta: string[] = [];
-  if (status.pid != null) meta.push(`pid ${status.pid}`);
-  const fullModel = activeModelRef || status.model || "";
-  if (fullModel) meta.push(fullModel);
-  sessionMetaEl.textContent = meta.filter(Boolean).join(" · ");
-  sessionMetaEl.title = fullModel;
+  const fullModel = activeModelRef || status.model || "omp default";
+  sessionMetaEl.textContent = fullModel;
+  const tipParts = [fullModel];
+  if (status.pid != null) tipParts.push(`pid ${status.pid}`);
+  sessionMetaEl.title = tipParts.join(" · ");
+  const sessionCard = document.getElementById("session-card");
+  if (sessionCard) {
+    sessionCard.title = tipParts.join(" · ");
+  }
 }
 
 /** Collect optional default/smol/slow/plan labels if present on the model object. */
@@ -365,6 +404,76 @@ function modelRoleAnnotation(m: BoundModel): string {
     if (extra[key] === true) found.push(key);
   }
   return [...new Set(found)].join(", ");
+}
+
+function chipLabel(m: BoundModel): string {
+  const id = m.id;
+  const provider = m.provider || "";
+  // Prefer short id; prefix provider lightly when helpful.
+  if (provider && !id.toLowerCase().startsWith(provider.toLowerCase())) {
+    return `${provider} · ${id}`;
+  }
+  return id;
+}
+
+function setModelTabsDisabled(disabled: boolean): void {
+  for (const btn of modelTabsEl.querySelectorAll<HTMLButtonElement>(".model-chip")) {
+    btn.disabled = disabled;
+  }
+}
+
+function syncModelChipsActive(selectedRef: string): void {
+  for (const btn of modelTabsEl.querySelectorAll<HTMLButtonElement>(".model-chip")) {
+    const ref = btn.dataset.ref ?? "";
+    const on = ref === selectedRef;
+    btn.classList.toggle("active", on);
+    btn.setAttribute("aria-selected", on ? "true" : "false");
+  }
+}
+
+function renderModelTabs(models: BoundModel[], selectedRef: string): void {
+  const prefer = selectedRef || "";
+  const byProvider = new Map<string, BoundModel[]>();
+  for (const m of models) {
+    const p = m.provider || "unknown";
+    const list = byProvider.get(p);
+    if (list) list.push(m);
+    else byProvider.set(p, [m]);
+  }
+
+  const parts: string[] = [];
+  const defaultActive = !prefer;
+  parts.push(
+    `<button type="button" class="model-chip${defaultActive ? " active" : ""}" role="tab" aria-selected="${
+      defaultActive ? "true" : "false"
+    }" data-ref="" title="omp default">omp default</button>`,
+  );
+
+  const providers = [...byProvider.keys()].sort((a, b) => a.localeCompare(b));
+  for (const provider of providers) {
+    parts.push(
+      `<span class="model-provider-label" aria-hidden="true">${escapeHtml(provider)}</span>`,
+    );
+    const group = byProvider.get(provider)!;
+    group.sort((a, b) => a.id.localeCompare(b.id));
+    for (const m of group) {
+      const ref = formatModelRef(m);
+      const role = modelRoleAnnotation(m);
+      const label = chipLabel(m);
+      const title = role ? `${ref} (${role})` : ref;
+      const active = prefer === ref;
+      parts.push(
+        `<button type="button" class="model-chip${active ? " active" : ""}" role="tab" aria-selected="${
+          active ? "true" : "false"
+        }" data-ref="${escapeHtml(ref)}" data-provider="${escapeHtml(m.provider)}" data-id="${escapeHtml(
+          m.id,
+        )}" title="${escapeHtml(title)}">${escapeHtml(label)}</button>`,
+      );
+    }
+  }
+
+  modelTabsEl.innerHTML = parts.join("");
+  setModelTabsDisabled(!status.ready || selectingModel);
 }
 
 function renderModelSelect(models: BoundModel[], selectedRef: string): void {
@@ -401,19 +510,31 @@ function renderModelSelect(models: BoundModel[], selectedRef: string): void {
     modelSelectEl.value = "";
   }
   modelSelectEl.title = modelSelectEl.value || "omp default";
+  renderModelTabs(models, modelSelectEl.value);
 }
 
 function renderChanges(): void {
   const files = getChangedFiles();
   if (files.length === 0) {
-    changesListEl.innerHTML = `<li class="empty-hint">No file changes yet</li>`;
+    changesListEl.innerHTML = `<li class="empty-hint">No changes yet</li>`;
     return;
   }
   changesListEl.innerHTML = files
-    .map(
-      (f) =>
-        `<li><span class="kind ${escapeHtml(f.kind)}">${escapeHtml(f.kind)}</span>${escapeHtml(f.path)}</li>`,
-    )
+    .map((f) => {
+      const kind = f.kind || "edit";
+      const base = f.path.split(/[/\\]/).pop() || f.path;
+      return (
+        `<li class="boop-row">` +
+        `<span class="boop-source ${escapeHtml(kind)}" aria-hidden="true"></span>` +
+        `<div class="boop-main">` +
+        `<div class="boop-title-row">` +
+        `<span class="boop-title" title="${escapeHtml(f.path)}">${escapeHtml(base)}</span>` +
+        `<span class="status-pill" data-kind="${escapeHtml(kind)}">${escapeHtml(kind)}</span>` +
+        `</div>` +
+        `<div class="boop-desc" title="${escapeHtml(f.path)}">${escapeHtml(f.path)}</div>` +
+        `</div></li>`
+      );
+    })
     .join("");
 }
 
@@ -421,17 +542,23 @@ function renderTasks(): void {
   const tasks = getPlanTasks();
   if (tasks.length === 0) {
     tasksListEl.innerHTML = `<li class="empty-hint">${
-      lastPlanText ? "No parseable steps — plan is in chat" : "Plan steps appear after a Plan turn"
+      lastPlanText ? "No parseable steps — plan is in chat" : "No tasks yet"
     }</li>`;
     return;
   }
   tasksListEl.innerHTML = tasks
     .map((t) => {
       const label = stripMarkdownEmphasis(t.text);
+      const kind = t.done ? "done" : "todo";
       return (
-        `<li class="${t.done ? "done" : ""}" data-id="${escapeHtml(t.id)}">` +
-        `<input type="checkbox" ${t.done ? "checked" : ""} aria-label="toggle step" />` +
-        `<span>${escapeHtml(label)}</span></li>`
+        `<li class="boop-row ${t.done ? "done" : ""}" data-id="${escapeHtml(t.id)}">` +
+        `<input type="checkbox" class="task-check" ${t.done ? "checked" : ""} aria-label="toggle step" />` +
+        `<span class="boop-source ${kind}" aria-hidden="true"></span>` +
+        `<div class="boop-main">` +
+        `<div class="boop-title-row">` +
+        `<span class="boop-title">${escapeHtml(label)}</span>` +
+        `<span class="status-pill" data-kind="${kind}">${kind === "done" ? "Done" : "Todo"}</span>` +
+        `</div></div></li>`
       );
     })
     .join("");
@@ -625,6 +752,7 @@ async function onModelPick(): Promise<void> {
   const opt = modelSelectEl.selectedOptions[0];
   const ref = modelSelectEl.value;
   modelSelectEl.title = ref || "omp default";
+  syncModelChipsActive(ref);
   if (!ref) {
     // Empty = follow omp default for *next* spawn; do not invent a clear_model RPC.
     settings.model = "";
@@ -650,6 +778,58 @@ async function onModelPick(): Promise<void> {
     saveSettings(settings);
     status = await getStatus().catch(() => status);
     if (status.model) activeModelRef = status.model.includes("/") ? status.model : activeModelRef;
+    syncModelChipsActive(activeModelRef);
+  } catch (err) {
+    renderModelSelect(getAvailableModelsCache(), previous);
+    appendSystem(`[set_model failed] ${String(err)}`);
+  } finally {
+    selectingModel = false;
+    renderStatus();
+  }
+}
+
+async function onModelChipClick(btn: HTMLButtonElement): Promise<void> {
+  if (!status.ready || selectingModel) return;
+  const ref = btn.dataset.ref ?? "";
+  const provider = btn.dataset.provider;
+  const modelId = btn.dataset.id;
+
+  // Keep hidden select in sync for a11y / fallback.
+  if ([...modelSelectEl.options].some((o) => o.value === ref)) {
+    modelSelectEl.value = ref;
+  } else {
+    modelSelectEl.value = "";
+  }
+  modelSelectEl.title = ref || "omp default";
+  syncModelChipsActive(ref);
+
+  if (!ref) {
+    settings.model = "";
+    modelEl.value = "";
+    saveSettings(settings);
+    activeModelRef = status.model || "";
+    renderStatus();
+    appendSystem("[models] omp default selected for next spawn (omit --model). Active session model unchanged.");
+    return;
+  }
+  if (!provider || !modelId) {
+    // Fall back to select-driven path if chip lacks datasets.
+    await onModelPick();
+    return;
+  }
+
+  const previous = activeModelRef;
+  selectingModel = true;
+  renderStatus();
+  try {
+    const updated = await setModel(provider, modelId);
+    activeModelRef = formatModelRef(updated) || ref;
+    settings.model = activeModelRef;
+    modelEl.value = activeModelRef;
+    saveSettings(settings);
+    status = await getStatus().catch(() => status);
+    if (status.model) activeModelRef = status.model.includes("/") ? status.model : activeModelRef;
+    renderModelSelect(getAvailableModelsCache(), activeModelRef);
   } catch (err) {
     renderModelSelect(getAvailableModelsCache(), previous);
     appendSystem(`[set_model failed] ${String(err)}`);
@@ -879,6 +1059,25 @@ executePlanBtn.addEventListener("click", () => {
 modelSelectEl.addEventListener("change", () => {
   void onModelPick();
 });
+modelTabsEl.addEventListener("click", (e) => {
+  const btn = (e.target as HTMLElement).closest(".model-chip") as HTMLButtonElement | null;
+  if (!btn || btn.disabled) return;
+  void onModelChipClick(btn);
+});
+slashTriggerBtn.addEventListener("click", () => {
+  if (!composerEl.value.startsWith("/")) {
+    composerEl.value = `/${composerEl.value}`;
+  }
+  composerEl.focus();
+  const len = composerEl.value.length;
+  // Place caret after leading slash so palette filters from empty query.
+  if (composerEl.value === "/") {
+    composerEl.setSelectionRange(1, 1);
+  } else {
+    composerEl.setSelectionRange(len, len);
+  }
+  renderSlashPalette();
+});
 clearChangesBtn.addEventListener("click", () => {
   clearChangedFiles();
 });
@@ -968,5 +1167,6 @@ void (async () => {
   renderStatus();
   renderChanges();
   renderTasks();
+  updateEmptyChat();
   await doStart();
 })();
