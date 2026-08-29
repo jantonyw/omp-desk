@@ -157,7 +157,13 @@ async fn send_prompt(state: State<'_, Session>, message: String) -> CmdResult {
         "type": "prompt",
         "message": message,
     });
-    send_command(state, command).await?;
+    send_command(state.clone(), command).await?;
+    // Optimistic bump so the status bar moves before get_state catches up.
+    if let Some(p) = state.proc.lock().await.clone() {
+        let host = p.host();
+        let mut host = host.lock().await;
+        host.bump_message_count();
+    }
     Ok(ack(true, Some(id)))
 }
 
