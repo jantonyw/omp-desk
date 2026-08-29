@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Rust build output
+src-tauri/target/
+
+# Frontend build output
+dist/
+
+# Editor / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Never commit secrets or omp session data
+.env
+.env.*
+*.key

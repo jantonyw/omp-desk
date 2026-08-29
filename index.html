@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>omp-desk</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header id="topbar">
+        <span class="brand">omp-desk</span>
+        <div class="topbar-actions">
+          <button id="new-session">New session</button>
+          <button id="abort" disabled>Abort</button>
+          <button id="settings-toggle">Settings</button>
+        </div>
+      </header>
+
+      <section id="settings-panel">
+        <div class="row">
+          <label>omp path</label>
+          <input id="omp-path" type="text" spellcheck="false" />
+        </div>
+        <div class="row">
+          <label>cwd</label>
+          <input id="cwd" type="text" spellcheck="false" />
+        </div>
+        <div class="row">
+          <label>model</label>
+          <input id="model" type="text" spellcheck="false" />
+        </div>
+        <div class="row checks">
+          <label><input id="no-session" type="checkbox" /> no-session</label>
+          <label><input id="no-skills" type="checkbox" /> no-skills</label>
+          <label><input id="no-rules" type="checkbox" /> no-rules</label>
+        </div>
+        <div class="row">
+          <label>extra args</label>
+          <input id="extra-args" type="text" spellcheck="false" />
+        </div>
+        <div class="row">
+          <button id="apply-settings">Apply &amp; restart</button>
+        </div>
+      </section>
+
+      <main id="transcript"></main>
+
+      <footer id="composer-bar">
+        <textarea
+          id="composer"
+          placeholder="Ask omp… (Enter to send, Shift+Enter for newline)"
+          rows="3"
+          spellcheck="false"
+        ></textarea>
+        <button id="send" disabled>Send</button>
+      </footer>
+
+      <div id="status-bar"></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
