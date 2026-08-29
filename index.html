@@ -26,11 +26,24 @@
       <header id="topbar">
         <span class="brand">omp-desk</span>
         <div class="topbar-center">
-          <label class="mode-toggle" title="Plan then Execute">
-            <button type="button" id="mode-plan" class="mode-btn active" aria-pressed="true">Plan</button>
-            <button type="button" id="mode-execute" class="mode-btn" aria-pressed="false">Execute</button>
-          </label>
-          <label class="model-picker">
+          <div
+            id="model-tabs"
+            class="model-tabs"
+            role="tablist"
+            aria-label="Models"
+          >
+            <button
+              type="button"
+              class="model-chip active"
+              role="tab"
+              aria-selected="true"
+              data-ref=""
+              title="omp default"
+            >
+              omp default
+            </button>
+          </div>
+          <label class="model-picker model-picker-fallback">
             <span class="sr-only">Model</span>
             <select id="model-select" disabled title="Bound models from omp get_available_models">
               <option value="">omp default</option>
@@ -91,44 +104,74 @@
       <div id="studio">
         <aside id="pane-sessions" aria-label="Sessions">
           <div class="pane-title">Sessions</div>
-          <div id="session-card" class="session-card">
-            <div class="session-row">
-              <div id="session-state" class="session-state" data-state="not started">not started</div>
-              <div id="session-cwd" class="session-cwd" title=""></div>
+          <button id="new-session" type="button" class="new-chat-btn">New chat</button>
+          <div id="session-card" class="session-row-card" role="list">
+            <div class="boop-row session-boop" role="listitem">
+              <span class="boop-source" aria-hidden="true"></span>
+              <div class="boop-main">
+                <div class="boop-title-row">
+                  <span class="boop-title">Current session</span>
+                  <span id="session-state" class="status-pill" data-state="not started">not started</span>
+                </div>
+                <div id="session-cwd" class="boop-desc" title=""></div>
+                <div id="session-meta" class="boop-meta"></div>
+              </div>
             </div>
-            <div id="session-meta" class="session-meta"></div>
           </div>
           <div class="pane-actions">
-            <button id="new-session" type="button">New session</button>
-            <button id="stop-session" type="button">Stop</button>
+            <button id="stop-session" type="button" class="ghost-btn">Stop</button>
           </div>
         </aside>
 
-        <section id="pane-chat" aria-label="Chat">
-          <main id="transcript"></main>
-          <footer id="composer-bar">
-            <div class="composer-wrap">
-              <div
-                id="slash-palette"
-                class="slash-palette hidden"
-                role="listbox"
-                aria-label="Slash commands"
-                aria-hidden="true"
-              ></div>
-              <div class="composer-well">
-                <textarea
-                  id="composer"
-                  placeholder="Ask omp… (/ for commands · Enter send · Shift+Enter newline)"
-                  rows="3"
-                  spellcheck="false"
-                ></textarea>
-                <div class="composer-actions">
-                  <button id="send" type="button" disabled>Send</button>
-                  <button id="abort" type="button" disabled>Abort</button>
+        <section id="pane-chat" class="empty-chat" aria-label="Chat">
+          <nav class="mode-tabs" aria-label="Work mode">
+            <button type="button" id="mode-plan" class="mode-tab active" aria-pressed="true">Plan</button>
+            <button type="button" id="mode-execute" class="mode-tab" aria-pressed="false">Execute</button>
+          </nav>
+
+          <div id="chat-stage">
+            <div id="welcome" class="welcome" aria-hidden="false">
+              <h1 class="welcome-title">Ask omp</h1>
+              <p class="welcome-sub">how can I help?</p>
+            </div>
+            <main id="transcript"></main>
+            <footer id="composer-bar">
+              <div class="composer-wrap">
+                <div
+                  id="slash-palette"
+                  class="slash-palette hidden"
+                  role="listbox"
+                  aria-label="Slash commands"
+                  aria-hidden="true"
+                ></div>
+                <div class="composer-well">
+                  <button
+                    id="slash-trigger"
+                    type="button"
+                    class="composer-icon-btn"
+                    title="Slash commands"
+                    aria-label="Insert slash command"
+                  >
+                    /
+                  </button>
+                  <textarea
+                    id="composer"
+                    placeholder="Ask me anything (/ for commands · Enter send)"
+                    rows="2"
+                    spellcheck="false"
+                  ></textarea>
+                  <div class="composer-actions">
+                    <button id="abort" type="button" class="abort-ghost" disabled hidden>Abort</button>
+                    <button id="send" type="button" class="send-circle" disabled title="Send" aria-label="Send">
+                      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" fill="none">
+                        <path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+                      </svg>
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
-          </footer>
+            </footer>
+          </div>
         </section>
 
         <aside id="pane-inspector" aria-label="Inspector">
@@ -139,7 +182,7 @@
               <span>Changes</span>
               <button id="clear-changes" type="button" class="linkish">Clear</button>
             </div>
-            <ul id="changes-list" class="changes-list"></ul>
+            <ul id="changes-list" class="boop-list changes-list"></ul>
           </div>
 
           <div class="inspector-section grow">
@@ -147,14 +190,14 @@
               <span>Tasks</span>
               <button id="execute-plan" type="button" class="linkish" disabled>Confirm execute</button>
             </div>
-            <ul id="tasks-list" class="tasks-list"></ul>
+            <ul id="tasks-list" class="boop-list tasks-list"></ul>
           </div>
 
           <div class="inspector-section run-section">
             <div class="section-head"><span>Run</span></div>
             <div class="run-actions">
-              <button id="run-new-session" type="button">New session</button>
-              <button id="run-abort" type="button" disabled>Abort</button>
+              <button id="run-new-session" type="button" class="ghost-btn">New chat</button>
+              <button id="run-abort" type="button" class="ghost-btn" disabled>Abort</button>
             </div>
           </div>
         </aside>
