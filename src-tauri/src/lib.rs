@@ -313,13 +313,17 @@ fn list_session_history(cwd: Option<String>) -> CmdResult {
                                 let mut session_id = String::new();
                                 let mut session_cwd = String::new();
                                 let mut timestamp = String::new();
+                                let mut first_user_text = String::new();
 
-                                for line in content.lines().take(15) {
+                                for line in content.lines().take(40) {
                                     if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
                                         let ty = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
                                         if ty == "title" {
                                             if let Some(t) = val.get("title").and_then(|v| v.as_str()) {
-                                                title = t.to_string();
+                                                let t_trim = t.trim();
+                                                if !t_trim.is_empty() {
+                                                    title = t_trim.to_string();
+                                                }
                                             }
                                         } else if ty == "session" {
                                             if let Some(id) = val.get("id").and_then(|v| v.as_str()) {
@@ -330,6 +334,25 @@ fn list_session_history(cwd: Option<String>) -> CmdResult {
                                             }
                                             if let Some(ts) = val.get("timestamp").and_then(|v| v.as_str()) {
                                                 timestamp = ts.to_string();
+                                            }
+                                        } else if (ty == "message" || ty == "message_start") && first_user_text.is_empty() {
+                                            if let Some(msg) = val.get("message") {
+                                                let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
+                                                if role == "user" {
+                                                    if let Some(content_blocks) = msg.get("content").and_then(|c| c.as_array()) {
+                                                        for block in content_blocks {
+                                                            if block.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                                                if let Some(txt) = block.get("text").and_then(|s| s.as_str()) {
+                                                                    let clean = txt.lines().next().unwrap_or("").trim();
+                                                                    if !clean.is_empty() {
+                                                                        first_user_text = clean.chars().take(30).collect::<String>();
+                                                                        break;
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -343,9 +366,12 @@ fn list_session_history(cwd: Option<String>) -> CmdResult {
                                         .to_string();
                                 }
                                 if title.is_empty() {
-                                    title = "Untitled session".to_string();
+                                    if !first_user_text.is_empty() {
+                                        title = first_user_text;
+                                    } else {
+                                        title = "Untitled session".to_string();
+                                    }
                                 }
-
                                 let matches_cwd = match &cwd {
                                     Some(target_cwd) if !target_cwd.is_empty() => {
                                         session_cwd.starts_with(target_cwd) || target_cwd.starts_with(&session_cwd)
@@ -410,13 +436,17 @@ fn list_workspace_groups() -> CmdResult {
                                 let mut session_id = String::new();
                                 let mut session_cwd = String::new();
                                 let mut timestamp = String::new();
+                                let mut first_user_text = String::new();
 
-                                for line in content.lines().take(15) {
+                                for line in content.lines().take(40) {
                                     if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
                                         let ty = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
                                         if ty == "title" {
                                             if let Some(t) = val.get("title").and_then(|v| v.as_str()) {
-                                                title = t.to_string();
+                                                let t_trim = t.trim();
+                                                if !t_trim.is_empty() {
+                                                    title = t_trim.to_string();
+                                                }
                                             }
                                         } else if ty == "session" {
                                             if let Some(id) = val.get("id").and_then(|v| v.as_str()) {
@@ -427,6 +457,25 @@ fn list_workspace_groups() -> CmdResult {
                                             }
                                             if let Some(ts) = val.get("timestamp").and_then(|v| v.as_str()) {
                                                 timestamp = ts.to_string();
+                                            }
+                                        } else if (ty == "message" || ty == "message_start") && first_user_text.is_empty() {
+                                            if let Some(msg) = val.get("message") {
+                                                let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
+                                                if role == "user" {
+                                                    if let Some(content_blocks) = msg.get("content").and_then(|c| c.as_array()) {
+                                                        for block in content_blocks {
+                                                            if block.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                                                if let Some(txt) = block.get("text").and_then(|s| s.as_str()) {
+                                                                    let clean = txt.lines().next().unwrap_or("").trim();
+                                                                    if !clean.is_empty() {
+                                                                        first_user_text = clean.chars().take(30).collect::<String>();
+                                                                        break;
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -440,9 +489,12 @@ fn list_workspace_groups() -> CmdResult {
                                         .to_string();
                                 }
                                 if title.is_empty() {
-                                    title = "Untitled session".to_string();
+                                    if !first_user_text.is_empty() {
+                                        title = first_user_text;
+                                    } else {
+                                        title = "Untitled session".to_string();
+                                    }
                                 }
-
                                 let group_key = if session_cwd.is_empty() {
                                     "未分组".to_string()
                                 } else {

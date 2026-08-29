@@ -117,10 +117,32 @@ let planListeners: Array<() => void> = [];
 
 let availableModels: BoundModel[] = [];
 let modelListeners: Array<() => void> = [];
-
 let availableCommands: RpcAvailableSlashCommand[] = [];
 let commandListeners: Array<() => void> = [];
 
+let uiRequestListeners: Array<(req: ExtensionUiRequest) => void> = [];
+/** Interactive dialogs that arrived before any UI listener attached (StrictMode/HMR gap). */
+let queuedUiRequests: ExtensionUiRequest[] = [];
+
+function emitUiRequest(req: ExtensionUiRequest): void {
+  if (uiRequestListeners.length === 0) {
+    queuedUiRequests.push(req);
+    return;
+  }
+  for (const l of uiRequestListeners) l(req);
+}
+
+export function onExtensionUiRequest(fn: (req: ExtensionUiRequest) => void): () => void {
+  uiRequestListeners.push(fn);
+  if (queuedUiRequests.length > 0) {
+    const queued = queuedUiRequests;
+    queuedUiRequests = [];
+    for (const req of queued) fn(req);
+  }
+  return () => {
+    uiRequestListeners = uiRequestListeners.filter((l) => l !== fn);
+  };
+}
 type Pending = {
   resolve: (r: RpcResponse) => void;
   reject: (e: Error) => void;
@@ -308,12 +330,13 @@ export async function subscribeEvents(
 // Command wrappers
 // ---------------------------------------------------------------------------
 
-export async function startSession(settings: Settings): Promise<Status> {
+export async function startSession(settings: Settings, resume?: string): Promise<Status> {
   return invoke<Status>("start_session", {
     settings: {
       omp_path: settings.ompPath,
       cwd: settings.cwd,
       model: settings.model || null,
+      resume: resume || null,
       no_session: settings.noSession,
       no_skills: settings.noSkills,
       no_rules: settings.noRules,
@@ -670,24 +693,32 @@ export function handleEvent(ev: RpcEventPayload): void {
         const toolName = String(f?.toolName ?? "tool");
         const args = f?.args;
         recordChange(toolName, args);
-        entries.push({
-          id: `t${seq++}`,
-          role: "tool",
-          text: `call ${toolName}`,
-          toolName,
-          toolArgs: args,
-          streaming: true,
-        });
+        if (entries[entries.length - 1] && entries[entries.length - 1].role === "tool" && entries[entries.length - 1].streaming && (entries[entries.length - 1].text === `call ${toolName}` || entries[entries.length - 1].toolName === toolName)) {
+                  // dedup
+                } else {
+                  entries.push({
+                    id: `t${seq++}`,
+                    role: "tool",
+                    text: `call ${toolName}`,
+                    toolName,
+                    toolArgs: args,
+                    streaming: true,
+                  });
+                }
       } else if (ty === "tool_execution_end") {
         const toolName = String(f?.toolName ?? "tool");
         const isError = Boolean(f?.isError);
-        entries.push({
-          id: `t${seq++}`,
-          role: "tool",
-          text: `done ${toolName}`,
-          toolName,
-          isError,
-        });
+        if (entries[entries.length - 1] && entries[entries.length - 1].role === "tool" && !entries[entries.length - 1].streaming && (entries[entries.length - 1].text === `done ${toolName}` || entries[entries.length - 1].toolName === toolName)) {
+                  // dedup
+                } else {
+                  entries.push({
+                    id: `t${seq++}`,
+                    role: "tool",
+                    text: `done ${toolName}`,
+                    toolName,
+                    isError,
+                  });
+                }
       } else if (ty === "agent_start") {
         // A new turn begins; a fresh live assistant entry starts on first delta.
       } else if (ty === "agent_end") {
@@ -732,43 +763,35 @@ function handleResponse(resp: RpcResponse): void {
 }
 
 function handleExtensionUi(req: ExtensionUiRequest): void {
-  // MVP policy: auto-deny interactive dialogs so the stream never hangs, but
-  // surface passive notifications and open_url in the transcript.
   switch (req.method) {
     case "notify":
     case "setStatus":
     case "setWidget":
     case "setTitle":
     case "set_editor_text":
-    case "cancel":
-      return; // passive — no response needed.
+      return;
+    case "cancel": {
+      // omp aborts a pending dialog (timeout/signal). Drop queued request and
+      // tell the UI to close — do not auto-respond; the agent already settled.
+      queuedUiRequests = queuedUiRequests.filter((p) => p.id !== req.targetId);
+      emitUiRequest(req);
+      return;
+    }
     case "open_url": {
       const url = req.launchUrl ?? req.url;
       if (url) void openUrl(url);
       return;
     }
-    case "confirm": {
-      entries.push({
-        id: `ui${seq++}`,
-        role: "system",
-        text: `[extension: ${req.title ?? "confirm"} → ${req.message ?? ""}] (auto-denied)`,
-      });
-      void respondExtensionUi(req.id, { confirmed: false });
-      break;
-    }
+    case "confirm":
     case "select":
     case "input":
     case "editor": {
-      entries.push({
-        id: `ui${seq++}`,
-        role: "system",
-        text: `[extension: ${req.title ?? req.method}] (auto-cancelled)`,
-      });
-      void respondExtensionUi(req.id, { cancelled: true, timedOut: false });
-      break;
-    }
-    default:
+      // Never auto-deny: bash approval is a select(["Approve","Deny"]) that
+      // blocks the tool until extension_ui_response. Auto-cancelling here is
+      // what made the dialog appear while `done bash` already landed.
+      emitUiRequest(req);
       return;
+    }
   }
 }
 

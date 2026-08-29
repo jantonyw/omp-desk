@@ -35,6 +35,8 @@ import {
   PLAN_PREFIX,
   EXECUTE_PREFIX,
   stripMarkdownEmphasis,
+  onExtensionUiRequest,
+  respondExtensionUi,
   type Status,
   type Settings,
   type TranscriptEntry,
@@ -43,10 +45,40 @@ import {
   type WorkspaceGroup,
   type SessionHistoryEntry,
 } from "./client";
-import type { BoundModel, RpcAvailableSlashCommand, RpcEventPayload } from "./protocol";
+import type { BoundModel, RpcAvailableSlashCommand, RpcEventPayload, ExtensionUiRequest } from "./protocol";
 import { loadTheme, saveTheme, applyTheme, type ThemeId } from "./theme";
 import { loadSettings, saveSettings } from "./settings";
 import { filterCommands } from "./slash-palette";
+
+const ACTIVE_SESSION_KEY = "omp-desk.active-session";
+
+type StoredActiveSession = {
+  id: string;
+  filePath: string;
+  cwd: string;
+};
+
+function loadActiveSession(): StoredActiveSession | null {
+  try {
+    const raw = localStorage.getItem(ACTIVE_SESSION_KEY);
+    if (!raw) return null;
+    const value = JSON.parse(raw) as Partial<StoredActiveSession>;
+    if (typeof value.id !== "string" || typeof value.filePath !== "string" || typeof value.cwd !== "string") {
+      return null;
+    }
+    return { id: value.id, filePath: value.filePath, cwd: value.cwd };
+  } catch {
+    return null;
+  }
+}
+
+function saveActiveSession(session: StoredActiveSession): void {
+  localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(session));
+}
+
+function clearActiveSession(): void {
+  localStorage.removeItem(ACTIVE_SESSION_KEY);
+}
 
 // Subcomponents
 import { TopBar } from "./components/TopBar";
@@ -55,7 +87,7 @@ import { IdeSidePanel } from "./components/IdeSidePanel";
 import { SessionsPane } from "./components/SessionsPane";
 import { ChatPane } from "./components/ChatPane";
 import { InspectorPane } from "./components/InspectorPane";
-
+import { PermissionDialog } from "./components/PermissionDialog";
 export function App(): React.ReactElement {
   // Theme state
   const [theme, setThemeState] = useState<ThemeId>(loadTheme);
@@ -105,8 +137,16 @@ export function App(): React.ReactElement {
   const [slashIndex, setSlashIndex] = useState<number>(0);
   const [slashFiltered, setSlashFiltered] = useState<RpcAvailableSlashCommand[]>([]);
 
+  // Interactive extension UI / permission request state
+  const [activeUiRequest, setActiveUiRequest] = useState<ExtensionUiRequest | null>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const transcriptRef = useRef<HTMLElement>(null);
+  const settingsRef = useRef<Settings>(settings);
+
+  const updateSettings = useCallback((nextSettings: Settings) => {
+    settingsRef.current = nextSettings;
+    setSettings(nextSettings);
+  }, []);
 
   const appendSystem = useCallback((text: string) => {
     handleEvent({ kind: "stderr", text });
@@ -119,14 +159,29 @@ export function App(): React.ReactElement {
     }));
   }, []);
 
-  const loadWorkspaces = useCallback(async () => {
+  const loadWorkspaces = useCallback(async (sessionId?: string) => {
     try {
       const groups = await fetchWorkspaceGroups();
       setWorkspaceGroups(groups);
+
+      // Session JSONL is the source of truth for its workspace. Align the
+      // selected workspace after a reload so the active record opens in the
+      // group where OMP actually stored it instead of remaining hidden in a
+      // previously selected workspace.
+      if (sessionId) {
+        const session = groups
+          .flatMap((group) => group.sessions)
+          .find((item) => item.id === sessionId);
+        if (session?.cwd && session.cwd !== settingsRef.current.cwd) {
+          const nextSettings = { ...settingsRef.current, cwd: session.cwd };
+          updateSettings(nextSettings);
+          saveSettings(nextSettings);
+        }
+      }
     } catch {
       // Ignore if session directory not ready
     }
-  }, []);
+  }, [updateSettings]);
 
   const refreshMessageCount = useCallback(async () => {
     try {
@@ -143,6 +198,9 @@ export function App(): React.ReactElement {
       }
       if (st.session_id) {
         setActiveSessionId(st.session_id);
+        if (st.session_file) {
+          saveActiveSession({ id: st.session_id, filePath: st.session_file, cwd: settingsRef.current.cwd });
+        }
       }
     } catch {
       // get_state may fail mid-exit
@@ -150,12 +208,24 @@ export function App(): React.ReactElement {
   }, []);
 
   const onReadyLoadModels = useCallback(async () => {
+    let currentStatus: Status | undefined;
+    // Persist the session identity before model discovery: model RPC calls can
+    // take time, while a reload immediately after creating a session must not
+    // lose its resume target.
+    await refreshMessageCount();
+
     try {
       const availModels = await fetchAvailableModels();
       const st = await getStatus();
+      currentStatus = st;
       setStatus(st);
       if (st.model) setActiveModelRef(st.model);
-      if (st.session_id) setActiveSessionId(st.session_id);
+      if (st.session_id) {
+        setActiveSessionId(st.session_id);
+        if (st.session_file) {
+          saveActiveSession({ id: st.session_id, filePath: st.session_file, cwd: settingsRef.current.cwd });
+        }
+      }
       if (settings.model) {
         const match = availModels.find((m) => formatModelRef(m) === settings.model);
         if (match && activeModelRef !== settings.model) {
@@ -175,8 +245,7 @@ export function App(): React.ReactElement {
     } catch {
       // Background preload; ignore timeout if child is busy initializing
     }
-    await refreshMessageCount();
-    void loadWorkspaces();
+    void loadWorkspaces(currentStatus?.session_id);
   }, [settings.model, activeModelRef, appendSystem, refreshMessageCount, loadWorkspaces]);
 
   const capturePlanFromTranscript = useCallback(() => {
@@ -198,7 +267,13 @@ export function App(): React.ReactElement {
         void getStatus().then((s) => {
           setStatus(s);
           if (s.model) setActiveModelRef(s.model);
-          if (s.session_id) setActiveSessionId(s.session_id);
+          if (s.session_id) {
+            setActiveSessionId(s.session_id);
+            if (s.session_file) {
+              saveActiveSession({ id: s.session_id, filePath: s.session_file, cwd: settingsRef.current.cwd });
+            }
+          }
+          void loadWorkspaces(s.session_id);
         });
         void onReadyLoadModels();
       }
@@ -220,12 +295,18 @@ export function App(): React.ReactElement {
           void getStatus().then((s) => {
             setStatus(s);
             if (s.model) setActiveModelRef(s.model.includes("/") ? s.model : s.model || "");
-            if (s.session_id) setActiveSessionId(s.session_id);
+            if (s.session_id) {
+              setActiveSessionId(s.session_id);
+              if (s.session_file) {
+                saveActiveSession({ id: s.session_id, filePath: s.session_file, cwd: settingsRef.current.cwd });
+              }
+            }
             if (f.command === "set_model" && f.success && f.data) {
               const m = f.data as BoundModel;
               const ref = formatModelRef(m);
               if (ref) setActiveModelRef(ref);
             }
+            void loadWorkspaces(s.session_id);
           });
         }
       }
@@ -234,7 +315,7 @@ export function App(): React.ReactElement {
         const f = ev.frame as { type?: string } | undefined;
         if (f?.type === "agent_end") {
           void refreshMessageCount();
-          void loadWorkspaces();
+          void getStatus().then((s) => void loadWorkspaces(s.session_id));
           if (workMode === "plan") {
             queueMicrotask(() => capturePlanFromTranscript());
           }
@@ -244,7 +325,11 @@ export function App(): React.ReactElement {
             setStatus(s);
           });
         }
-        if (f?.type === "session_info_update" || f?.type === "config_update") {
+        if (f?.type === "session_info_update") {
+          void refreshMessageCount();
+          void getStatus().then((s) => void loadWorkspaces(s.session_id));
+        }
+        if (f?.type === "config_update") {
           void refreshMessageCount();
         }
       }
@@ -253,7 +338,7 @@ export function App(): React.ReactElement {
   );
 
   const doStart = useCallback(
-    async (sToStart?: Settings) => {
+    async (sToStart?: Settings, resume?: string) => {
       const s = sToStart || settings;
       setActiveModelRef(s.model);
       setLastPlanText("");
@@ -262,29 +347,53 @@ export function App(): React.ReactElement {
       clearChangedFiles();
       clearPlanTasks();
       try {
-        const st = await startSession(s);
+        const st = await startSession(s, resume);
         setStatus(st);
-        if (st.session_id) setActiveSessionId(st.session_id);
+        if (st.session_id) {
+          setActiveSessionId(st.session_id);
+          if (st.session_file) {
+            saveActiveSession({ id: st.session_id, filePath: st.session_file, cwd: s.cwd });
+          }
+        }
+        void loadWorkspaces(st.session_id);
       } catch (err) {
         appendSystem(`[start failed] ${String(err)}`);
         const fallback = await getStatus().catch(() => status);
         setStatus({ ...fallback, started: false });
       }
-      void loadWorkspaces();
     },
     [settings, appendSystem, status, loadWorkspaces]
   );
 
+  const loadSessionTranscript = useCallback(async (sessionId: string, filePath: string) => {
+    try {
+      const rawMessages = await fetchSessionTranscript(filePath);
+      const transcriptMessages: TranscriptEntry[] = rawMessages.map((m, idx) => ({
+        id: `hist-${sessionId}-${idx}`,
+        role: m.role === "user" ? "user" : m.role === "tool" ? "tool" : "assistant",
+        text: m.text,
+        toolName: m.tool_name,
+        isError: m.is_error,
+      }));
+
+      // Phase 1 (Instant 0ms): For large sessions, mount the bottom 16 first so clicking is instant
+      if (transcriptMessages.length > 16) {
+        setTranscriptEntries(transcriptMessages.slice(-16));
+        // Phase 2: Hydrate full list in next tick without freezing the UI frame
+        setTimeout(() => {
+          setTranscriptEntries(transcriptMessages);
+        }, 50);
+      } else {
+        setTranscriptEntries(transcriptMessages);
+      }
+    } catch (err) {
+      appendSystem(`[load history failed] ${String(err)}`);
+    }
+  }, [appendSystem]);
+
   // Initialize
   useEffect(() => {
     applyTheme(theme);
-
-    void (async () => {
-      const s = await loadSettings();
-      setSettings(s);
-      setActiveModelRef(s.model);
-      await doStart(s);
-    })();
 
     const unsubTranscript = onTranscriptChange(() => {
       setEntries([...getEntries()]);
@@ -306,20 +415,84 @@ export function App(): React.ReactElement {
     });
 
     let unsubEvents: (() => void) | undefined;
-    void subscribeEvents(onRpcEvent).then((unsub) => {
-      unsubEvents = unsub;
+    let eventsCancelled = false;
+    const eventsReady = subscribeEvents(onRpcEvent)
+      .then((unsub) => {
+        if (eventsCancelled) {
+          unsub();
+          return false;
+        }
+        unsubEvents = unsub;
+        return true;
+      })
+      .catch((err) => {
+        if (!eventsCancelled) {
+          appendSystem(`[event subscription failed] ${String(err)}`);
+        }
+        return !eventsCancelled;
+      });
+
+    void (async () => {
+      const listening = await eventsReady;
+      if (!listening || eventsCancelled) return;
+
+      const s = await loadSettings();
+      if (eventsCancelled) return;
+      const savedSession = loadActiveSession();
+      const initialSettings = savedSession && savedSession.cwd !== s.cwd
+        ? { ...s, cwd: savedSession.cwd }
+        : s;
+      updateSettings(initialSettings);
+      setActiveModelRef(initialSettings.model);
+
+      // Refreshing the WebView does not restart the Rust backend. Reuse its
+      // existing OMP child instead of killing it with another start_session.
+      const existingStatus = await getStatus();
+      if (existingStatus.started && existingStatus.running && !existingStatus.exited) {
+        setStatus(existingStatus);
+        if (existingStatus.model) {
+          setActiveModelRef(existingStatus.model);
+        }
+
+        const sessionId = existingStatus.session_id ?? savedSession?.id;
+        const filePath = existingStatus.session_file ?? savedSession?.filePath;
+        if (sessionId && filePath) {
+          setActiveSessionId(sessionId);
+          saveActiveSession({ id: sessionId, filePath, cwd: initialSettings.cwd });
+          await loadSessionTranscript(sessionId, filePath);
+        }
+        await loadWorkspaces(sessionId);
+        return;
+      }
+
+      if (savedSession) {
+        setActiveSessionId(savedSession.id);
+      }
+      await doStart(initialSettings, savedSession?.filePath);
+      if (savedSession && !eventsCancelled) {
+        await loadSessionTranscript(savedSession.id, savedSession.filePath);
+      }
+    })();
+
+    const unsubUi = onExtensionUiRequest((req) => {
+      if (req.method === "cancel") {
+        setActiveUiRequest((cur) => (cur && cur.id === req.targetId ? null : cur));
+        return;
+      }
+      setActiveUiRequest(req);
     });
 
     return () => {
+      eventsCancelled = true;
       unsubTranscript();
       unsubChanges();
       unsubPlan();
       unsubModels();
       unsubCommands();
+      unsubUi();
       unsubEvents?.();
     };
   }, []);
-
   const handleThemeChange = (newTheme: ThemeId) => {
     setThemeState(newTheme);
     saveTheme(newTheme);
@@ -328,7 +501,7 @@ export function App(): React.ReactElement {
 
   const handleApplySettings = async (newSettings: Settings) => {
     saveSettings(newSettings);
-    setSettings(newSettings);
+    updateSettings(newSettings);
     setSettingsOpen(false);
     await doStart(newSettings);
   };
@@ -336,7 +509,7 @@ export function App(): React.ReactElement {
   const handleSelectWorkspace = async (newPath: string) => {
     if (!newPath || newPath === settings.cwd) return;
     const nextSettings = { ...settings, cwd: newPath };
-    setSettings(nextSettings);
+    updateSettings(nextSettings);
     saveSettings(nextSettings);
     await doStart(nextSettings);
   };
@@ -353,7 +526,7 @@ export function App(): React.ReactElement {
 
     if (!ref) {
       const updatedSettings = { ...settings, model: "" };
-      setSettings(updatedSettings);
+      updateSettings(updatedSettings);
       saveSettings(updatedSettings);
       setActiveModelRef(status.model || "");
       appendSystem(
@@ -371,7 +544,7 @@ export function App(): React.ReactElement {
       const newRef = formatModelRef(updated) || ref;
       setActiveModelRef(newRef);
       const updatedSettings = { ...settings, model: newRef };
-      setSettings(updatedSettings);
+      updateSettings(updatedSettings);
       saveSettings(updatedSettings);
       const st = await getStatus().catch(() => status);
       if (st.model) {
@@ -387,34 +560,40 @@ export function App(): React.ReactElement {
 
   const handleSelectSession = async (sessionItem: SessionHistoryEntry) => {
     try {
+      const workspaceSettings = sessionItem.cwd && sessionItem.cwd !== settings.cwd
+        ? { ...settings, cwd: sessionItem.cwd }
+        : settings;
+      const nextSettings = workspaceSettings.noSession
+        ? { ...workspaceSettings, noSession: false }
+        : workspaceSettings;
       setActiveSessionId(sessionItem.id);
-      if (sessionItem.cwd && sessionItem.cwd !== settings.cwd) {
-        const nextSettings = { ...settings, cwd: sessionItem.cwd };
-        setSettings(nextSettings);
+      saveActiveSession({ id: sessionItem.id, filePath: sessionItem.file_path, cwd: nextSettings.cwd });
+      if (nextSettings !== settings) {
+        updateSettings(nextSettings);
         saveSettings(nextSettings);
       }
-      const rawMessages = await fetchSessionTranscript(sessionItem.file_path);
-      const transcriptMessages: TranscriptEntry[] = rawMessages.map((m, idx) => ({
-        id: `hist-${sessionItem.id}-${idx}`,
-        role: m.role === "user" ? "user" : m.role === "tool" ? "tool" : "assistant",
-        text: m.text,
-        toolName: m.tool_name,
-        isError: m.is_error,
-      }));
-
-      // Phase 1 (Instant 0ms): For large sessions, mount the bottom 16 first so clicking is instant
-      if (transcriptMessages.length > 16) {
-        setTranscriptEntries(transcriptMessages.slice(-16));
-        // Phase 2: Hydrate full list in next tick without freezing the UI frame
-        setTimeout(() => {
-          setTranscriptEntries(transcriptMessages);
-        }, 50);
-      } else {
-        setTranscriptEntries(transcriptMessages);
+      if (workspaceSettings.noSession) {
+        appendSystem("[session] 已关闭 no-session，继续聊天的内容会保存到左侧历史记录。");
       }
+      await doStart(nextSettings, sessionItem.file_path);
+      await loadSessionTranscript(sessionItem.id, sessionItem.file_path);
     } catch (err) {
       appendSystem(`[load history failed] ${String(err)}`);
     }
+  };
+
+  const handleNewSession = () => {
+    const nextSettings = settings.noSession
+      ? { ...settings, noSession: false }
+      : settings;
+    if (nextSettings !== settings) {
+      updateSettings(nextSettings);
+      saveSettings(nextSettings);
+      appendSystem("[session] 已关闭 no-session，新会话会保存到左侧历史记录。");
+    }
+    clearActiveSession();
+    setActiveSessionId("");
+    void doStart(nextSettings);
   };
 
   const handleInsertFileReference = (filePath: string) => {
@@ -649,7 +828,7 @@ export function App(): React.ReactElement {
           cwd={settings.cwd}
           activeSessionId={activeSessionId}
           workspaceGroups={workspaceGroups}
-          onNewSession={() => void doStart()}
+          onNewSession={handleNewSession}
           onSelectSession={handleSelectSession}
           onRefreshWorkspaces={loadWorkspaces}
           onOpenSettings={() => setSettingsOpen(true)}
@@ -695,14 +874,25 @@ export function App(): React.ReactElement {
           onClearChanges={clearChangedFiles}
           onConfirmExecute={handleConfirmExecute}
           onToggleTask={togglePlanTask}
-          onNewSession={() => void doStart()}
+          onNewSession={handleNewSession}
           onAbort={() => void abort()}
         />
       </div>
-
       <div id="status-bar" title={fullTipStatus.join(" · ")}>
         {visibleStatus.join(" · ")}
       </div>
+
+      <PermissionDialog
+        request={activeUiRequest}
+        onRespond={async (reqId, resp) => {
+          setActiveUiRequest(null);
+          try {
+            await respondExtensionUi(reqId, resp);
+          } catch (err) {
+            console.error("Failed to respond to permission request:", err);
+          }
+        }}
+      />
     </div>
   );
 }

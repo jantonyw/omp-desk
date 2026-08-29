@@ -36,6 +36,7 @@ pub struct SessionSettings {
     pub omp_path: String,
     pub cwd: String,
     pub model: Option<String>,
+    pub resume: Option<String>,
     pub no_session: bool,
     pub no_skills: bool,
     pub no_rules: bool,
@@ -224,6 +225,12 @@ impl OmpProcess {
             let model = model.trim();
             if !model.is_empty() {
                 cmd.arg("--model").arg(model);
+            }
+        }
+        if let Some(resume) = &settings.resume {
+            let resume = resume.trim();
+            if !resume.is_empty() {
+                cmd.arg("--resume").arg(resume);
             }
         }
         if settings.no_session {
@@ -605,6 +612,20 @@ async fn dispatch_frame(
             // the frontend dispatches on frame.type (see rpc-types.ts).
             _ => {}
         }
+    }
+
+    // OMP only reports the actual session id and JSONL file through
+    // `get_state`. Request it as soon as the process becomes ready so the
+    // backend status is correct even if the WebView reloads before subscribing
+    // to the ready event.
+    if ty == "ready" {
+        let request = serde_json::json!({
+            "id": next_req_id(),
+            "type": "get_state",
+        })
+        .to_string();
+        let guard = host.lock().await;
+        let _ = guard.send_line(&request);
     }
 
     let kind = match ty.as_str() {

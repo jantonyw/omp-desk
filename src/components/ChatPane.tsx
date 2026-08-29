@@ -23,6 +23,37 @@ function modelRoleAnnotation(m: BoundModel): string {
   }
   return [...new Set(found)].join(", ");
 }
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function formatTerminalHtml(raw: string): string {
+  const lines = raw.split("\n");
+  const formatted = lines.map((line) => {
+    const trimmed = line.trimStart();
+    if (trimmed.startsWith("$ ")) {
+      return `<span class="term-prompt">$</span> <span class="term-cmd">${escapeHtml(trimmed.slice(2))}</span>`;
+    }
+    if (trimmed.startsWith("✓ ") || trimmed.startsWith("✔ ")) {
+      return `<span class="term-success">✓</span> <span class="term-success-text">${escapeHtml(trimmed.slice(2))}</span>`;
+    }
+    if (trimmed.startsWith("(!) ") || trimmed.startsWith("⚠️ ")) {
+      return `<span class="term-warn">(!)</span> <span class="term-warn-text">${escapeHtml(trimmed.slice(4))}</span>`;
+    }
+    if (trimmed.startsWith("✖ ") || trimmed.startsWith("Error:") || trimmed.startsWith("error[")) {
+      return `<span class="term-error">${escapeHtml(trimmed)}</span>`;
+    }
+    if (trimmed.startsWith("Wall time:")) {
+      return `<span class="term-time">${escapeHtml(trimmed)}</span>`;
+    }
+    return escapeHtml(line);
+  });
+  return formatted.join("\n");
+}
 
 const TranscriptMessageItem = React.memo(function TranscriptMessageItem({
   entry,
@@ -38,6 +69,67 @@ const TranscriptMessageItem = React.memo(function TranscriptMessageItem({
       </div>
     );
   }
+  // 2. Bash / Terminal Output
+  const isBashTerminal =
+    e.toolName === "bash" ||
+    e.toolName === "sh" ||
+    e.toolName === "terminal" ||
+    (e.role === "tool" && (e.toolName?.includes("bash") || e.text.trimStart().startsWith("$ "))) ||
+    (e.role === "assistant" && e.toolName === "bash");
+
+  if (isBashTerminal) {
+    const isError = Boolean(e.isError);
+    return (
+      <div className={`msg tool bash-terminal ${isError ? "error" : ""}`} data-id={e.id}>
+        <div className="terminal-console-card">
+          <div className="terminal-console-head">
+            <div className="terminal-dots">
+              <span className="t-dot red" />
+              <span className="t-dot yellow" />
+              <span className="t-dot green" />
+            </div>
+            <span className="terminal-title">Terminal · bash</span>
+            <button
+              type="button"
+              className="code-block-copy"
+              onClick={() => navigator.clipboard.writeText(e.text)}
+            >
+              Copy
+            </button>
+          </div>
+          <pre className="terminal-console-body">
+            <code dangerouslySetInnerHTML={{ __html: formatTerminalHtml(e.text) }} />
+          </pre>
+        </div>
+      </div>
+    );
+  }
+
+  // 3. Other Tool Outputs (read, write, edit, etc.)
+  if (e.role === "tool" || (e.role === "assistant" && e.toolName && !e.text.trim())) {
+    const isError = Boolean(e.isError);
+    const toolLabel = e.toolName ? `${e.toolName}` : "tool output";
+    return (
+      <div className={`msg tool ${isError ? "error" : ""}`} data-id={e.id}>
+        <div className="tool-output-card">
+          <div className="tool-output-head">
+            <span className="tool-output-tag">🛠️ {toolLabel}</span>
+            {isError && <span className="status-pill" data-kind="error">Error</span>}
+            <button
+              type="button"
+              className="code-block-copy"
+              onClick={() => navigator.clipboard.writeText(e.text)}
+            >
+              Copy
+            </button>
+          </div>
+          <pre className="tool-output-pre"><code>{e.text}</code></pre>
+        </div>
+      </div>
+    );
+  }
+
+  // 4. Assistant Conversational Response (Markdown + Thinking)
   if (e.role === "assistant") {
     const cls = e.streaming ? "msg assistant streaming" : "msg assistant";
     const bodyClass = e.streaming ? "body" : "body md";
@@ -65,28 +157,8 @@ const TranscriptMessageItem = React.memo(function TranscriptMessageItem({
       </div>
     );
   }
-  if (e.role === "tool") {
-    const isError = Boolean(e.isError);
-    const toolLabel = e.toolName ? `${e.toolName}` : "tool output";
-    return (
-      <div className={`msg tool ${isError ? "error" : ""}`}>
-        <div className="tool-output-card">
-          <div className="tool-output-head">
-            <span className="tool-output-tag">🛠️ {toolLabel}</span>
-            {isError && <span className="status-pill" data-kind="error">Error</span>}
-            <button
-              type="button"
-              className="code-block-copy"
-              onClick={() => navigator.clipboard.writeText(e.text)}
-            >
-              Copy
-            </button>
-          </div>
-          <pre className="tool-output-pre"><code>{e.text}</code></pre>
-        </div>
-      </div>
-    );
-  }
+
+  // 5. System Message
   const cls = e.isError ? "msg system error" : "msg system";
   return (
     <div className={cls}>

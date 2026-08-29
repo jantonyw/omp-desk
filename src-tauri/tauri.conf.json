@@ -19,7 +19,7 @@
         "minWidth": 900,
         "minHeight": 480,
         "resizable": true,
-        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --enable-gpu --ignore-gpu-blocklist"
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --enable-gpu --enable-gpu-rasterization --enable-zero-copy --enable-native-gpu-memory-buffers --ignore-gpu-blocklist --enable-features=CanvasOopRasterization"
       }
     ],
     "security": {
