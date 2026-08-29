@@ -1,9 +1,24 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>omp-desk</title>
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem("omp-desk.theme");
+          if (t !== "dark" && t !== "midnight" && t !== "light" && t !== "system") t = "dark";
+          document.documentElement.setAttribute("data-theme", t);
+          var dark = t === "dark" || t === "midnight" ||
+            (t === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          document.documentElement.style.colorScheme = dark ? "dark" : "light";
+        } catch (e) {
+          document.documentElement.setAttribute("data-theme", "dark");
+          document.documentElement.style.colorScheme = "dark";
+        }
+      })();
+    </script>
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
@@ -23,6 +38,15 @@
           </label>
         </div>
         <div class="topbar-actions">
+          <label class="theme-picker">
+            <span class="theme-label">Theme</span>
+            <select id="theme-select" title="Color theme" aria-label="Theme">
+              <option value="dark">Dark</option>
+              <option value="midnight">Midnight</option>
+              <option value="light">Light</option>
+              <option value="system">System</option>
+            </select>
+          </label>
           <button id="settings-toggle" type="button">Settings</button>
         </div>
       </header>
@@ -68,8 +92,10 @@
         <aside id="pane-sessions" aria-label="Sessions">
           <div class="pane-title">Sessions</div>
           <div id="session-card" class="session-card">
-            <div id="session-state" class="session-state">not started</div>
-            <div id="session-cwd" class="session-cwd" title=""></div>
+            <div class="session-row">
+              <div id="session-state" class="session-state" data-state="not started">not started</div>
+              <div id="session-cwd" class="session-cwd" title=""></div>
+            </div>
             <div id="session-meta" class="session-meta"></div>
           </div>
           <div class="pane-actions">
@@ -89,16 +115,18 @@
                 aria-label="Slash commands"
                 aria-hidden="true"
               ></div>
-              <textarea
-                id="composer"
-                placeholder="Ask omp… (/ for commands · Enter send · Shift+Enter newline)"
-                rows="3"
-                spellcheck="false"
-              ></textarea>
-            </div>
-            <div class="composer-actions">
-              <button id="send" type="button" disabled>Send</button>
-              <button id="abort" type="button" disabled>Abort</button>
+              <div class="composer-well">
+                <textarea
+                  id="composer"
+                  placeholder="Ask omp… (/ for commands · Enter send · Shift+Enter newline)"
+                  rows="3"
+                  spellcheck="false"
+                ></textarea>
+                <div class="composer-actions">
+                  <button id="send" type="button" disabled>Send</button>
+                  <button id="abort" type="button" disabled>Abort</button>
+                </div>
+              </div>
             </div>
           </footer>
         </section>
