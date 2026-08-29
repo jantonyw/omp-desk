@@ -54,63 +54,15 @@ const ALLOWED_ATTR = [
   "stroke-linejoin",
 ];
 
-const renderer = new marked.Renderer();
+const MAX_HIGHLIGHT_LINES = 150;
+const MAX_HIGHLIGHT_CHARS = 12000;
 
-renderer.code = function ({ text, lang }: { text: string; lang?: string }): string {
-  const language = lang && hljs.getLanguage(lang) ? lang : "";
-  let highlighted = "";
-
-  if (language) {
-    try {
-      highlighted = hljs.highlight(text, { language, ignoreIllegals: true }).value;
-    } catch {
-      highlighted = escapeHtml(text);
-    }
-  } else {
-    try {
-      const trimmed = text.trim();
-      if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-        highlighted = hljs.highlight(text, { language: "json", ignoreIllegals: true }).value;
-      } else if (
-        trimmed.startsWith("diff --git") ||
-        trimmed.startsWith("---") ||
-        trimmed.includes("@@ -") ||
-        trimmed.startsWith("File: ")
-      ) {
-        highlighted = hljs.highlight(text, { language: "diff", ignoreIllegals: true }).value;
-      } else {
-        highlighted = hljs.highlightAuto(text).value;
-      }
-    } catch {
-      highlighted = escapeHtml(text);
-    }
-  }
-
-  const langLabel = language || (text.trim().startsWith("{") ? "json" : "code");
-
-  return `<div class="code-block-wrap">
-    <div class="code-block-head">
-      <span class="code-block-lang">${escapeHtml(langLabel)}</span>
-      <button type="button" class="code-block-copy" onclick="navigator.clipboard.writeText(this.closest('.code-block-wrap').querySelector('code').textContent)">Copy</button>
-    </div>
-    <pre><code class="hljs ${language ? `language-${language}` : ""}">${highlighted}</code></pre>
-  </div>`;
-};
-
-// Cache for rendered Markdown HTML (LRU cache up to 500 items)
-const renderCache = new Map<string, string>();
-const MAX_CACHE_SIZE = 500;
-
-function getCachedOrRender(key: string, fn: () => string): string {
-  const cached = renderCache.get(key);
-  if (cached !== undefined) return cached;
-  const result = fn();
-  if (renderCache.size >= MAX_CACHE_SIZE) {
-    const firstKey = renderCache.keys().next().value;
-    if (firstKey) renderCache.delete(firstKey);
-  }
-  renderCache.set(key, result);
-  return result;
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 function guessLang(fileName: string): string {
@@ -147,107 +99,217 @@ function guessLang(fileName: string): string {
   }
 }
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+function highlightCode(
+  text: string,
+  lang?: string
+): { html: string; language: string; lineCount: number } {
+  const lines = text.split("\n");
+  const lineCount = lines.length;
+  const rawLang = (lang || "").trim().toLowerCase();
+  const language = rawLang && hljs.getLanguage(rawLang) ? rawLang : "";
+
+  // For massive code blocks (> 150 lines or > 12KB), highlight visible head lines
+  if (lineCount > MAX_HIGHLIGHT_LINES || text.length > MAX_HIGHLIGHT_CHARS) {
+    const headLines = lines.slice(0, MAX_HIGHLIGHT_LINES).join("\n");
+    const tailLines = lines.slice(MAX_HIGHLIGHT_LINES).join("\n");
+
+    let headHtml = "";
+    if (language) {
+      try {
+        headHtml = hljs.highlight(headLines, {
+          language,
+          ignoreIllegals: true,
+        }).value;
+      } catch {
+        headHtml = escapeHtml(headLines);
+      }
+    } else {
+      try {
+        if (headLines.trim().startsWith("{") || headLines.trim().startsWith("[")) {
+          headHtml = hljs.highlight(headLines, {
+            language: "json",
+            ignoreIllegals: true,
+          }).value;
+        } else {
+          headHtml = hljs.highlightAuto(headLines).value;
+        }
+      } catch {
+        headHtml = escapeHtml(headLines);
+      }
+    }
+
+    const tailHtml = escapeHtml(tailLines);
+    return {
+      html: `${headHtml}\n${tailHtml}`,
+      language: language || (text.trim().startsWith("{") ? "json" : "code"),
+      lineCount,
+    };
+  }
+
+  // Normal size code block: full AST syntax highlighting
+  let highlighted = "";
+  if (language) {
+    try {
+      highlighted = hljs.highlight(text, {
+        language,
+        ignoreIllegals: true,
+      }).value;
+    } catch {
+      highlighted = escapeHtml(text);
+    }
+  } else {
+    try {
+      const trimmed = text.trim();
+      if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+        highlighted = hljs.highlight(text, {
+          language: "json",
+          ignoreIllegals: true,
+        }).value;
+      } else if (
+        trimmed.startsWith("diff --git") ||
+        trimmed.startsWith("---") ||
+        trimmed.includes("@@ -") ||
+        trimmed.startsWith("File: ")
+      ) {
+        highlighted = hljs.highlight(text, {
+          language: "diff",
+          ignoreIllegals: true,
+        }).value;
+      } else {
+        highlighted = hljs.highlightAuto(text).value;
+      }
+    } catch {
+      highlighted = escapeHtml(text);
+    }
+  }
+
+  return {
+    html: highlighted,
+    language: language || (text.trim().startsWith("{") ? "json" : "code"),
+    lineCount,
+  };
 }
 
-// Format omp tool output chunks into clean codeblocks without over-fragmentation
-function formatOmpSnippets(text: string): string {
+const renderer = new marked.Renderer();
+
+renderer.code = function ({ text, lang }: { text: string; lang?: string }): string {
+  const { html, language, lineCount } = highlightCode(text, lang);
+  const linesTag =
+    lineCount > 20
+      ? `<span class="code-block-lines">${lineCount} lines</span>`
+      : "";
+
+  return `<div class="code-block-wrap">
+    <div class="code-block-head">
+      <div class="code-block-head-left">
+        <span class="code-block-lang">${escapeHtml(language)}</span>
+        ${linesTag}
+      </div>
+      <button type="button" class="code-block-copy" onclick="navigator.clipboard.writeText(this.closest('.code-block-wrap').querySelector('code').textContent)">Copy</button>
+    </div>
+    <pre><code class="hljs ${language ? `language-${language}` : ""}">${html}</code></pre>
+  </div>`;
+};
+
+// Auto-detect and format file anchor code snippets e.g. [src/App.tsx#1201] or package.json#93F6
+function formatFileCodeSnippets(text: string): string {
   if (!text) return "";
 
-  // If text already has code fences, don't modify it
-  if (text.includes("```")) {
-    return text;
-  }
+  // Quick check if text contains an anchor pattern like "file.ext#TAG"
+  const hasFileAnchor = /\[?[a-zA-Z0-9_\-./\\]+\.[a-zA-Z0-9_]+#[a-zA-Z0-9]+\]?/.test(text);
+  if (!hasFileAnchor) return text;
 
-  // 1. Detect Git diff chunks
-  if (
-    text.includes("--- Changes ---") ||
-    text.includes("diff --git") ||
-    (text.includes("@@ -") && text.includes("@@ +"))
-  ) {
-    return "```diff\n" + text + "\n```";
-  }
+  const lines = text.split("\n");
+  const output: string[] = [];
+  let inSnippet = false;
+  let snippetLines: string[] = [];
+  let currentFile = "";
 
-  // 2. Detect ESLint / terminal build output
-  if (
-    (/\d+:\d+:\s+(warning|error)/.test(text) || text.includes("✖ ") || text.includes("problems (")) &&
-    text.includes("Wall time:")
-  ) {
-    return "```bash\n" + text + "\n```";
-  }
+  const isAnchorHeader = (line: string): string | null => {
+    const trimmed = line.trim();
+    const m = /^\[?([a-zA-Z0-9_\-./\\]+\.[a-zA-Z0-9_]+#[a-zA-Z0-9]+)\]?$/.exec(trimmed);
+    return m ? m[1]! : null;
+  };
 
-  // 3. Detect file anchor headers like [package.json#93F6] or package.json#93F6 followed by line numbers
-  const fileHeaderPattern = /^(?:\[)?([a-zA-Z0-9_./\\-]+\.[a-zA-Z0-9]+(?:#[A-Za-z0-9]+)?)(?:\])?\s*$/m;
-  if (fileHeaderPattern.test(text)) {
-    const lines = text.split("\n");
-    const formatted: string[] = [];
-    let inSnippet = false;
-    let snippetLines: string[] = [];
-    let currentFileName = "";
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i]!;
-      const trimmed = line.trim();
-      const match = /^(?:\[)?([a-zA-Z0-9_./\\-]+\.[a-zA-Z0-9]+(?:#[A-Za-z0-9]+)?)(?:\])?$/.exec(trimmed);
-
-      if (match) {
-        if (inSnippet && snippetLines.length > 0) {
-          formatted.push("```" + guessLang(currentFileName) + "\n" + snippetLines.join("\n") + "\n```\n");
-          snippetLines = [];
-        }
-        inSnippet = true;
-        currentFileName = match[1]!;
-        formatted.push(`\n**📄 \`${currentFileName}\`**\n`);
-        continue;
-      }
-
-      if (inSnippet) {
-        // Keep snippet lines together (including ellipsis '...', line numbers '12:', code rows, and blanks)
-        const isSnippetLine =
-          /^\s*\*?\d+:\s*.*/.test(line) ||
-          trimmed === "..." ||
-          trimmed === "…" ||
-          trimmed.startsWith("[…") ||
-          trimmed.startsWith("[Showing") ||
-          line.startsWith(" ") ||
-          line.startsWith("\t") ||
-          trimmed === "";
-
-        if (isSnippetLine) {
-          snippetLines.push(line);
-        } else {
-          // Non-snippet line encountered (e.g. explanations or markdown headings)
-          if (snippetLines.length > 0) {
-            formatted.push("```" + guessLang(currentFileName) + "\n" + snippetLines.join("\n") + "\n```\n");
-            snippetLines = [];
-          }
-          inSnippet = false;
-          formatted.push(line);
-        }
-      } else {
-        formatted.push(line);
-      }
-    }
-
+  const flushSnippet = () => {
     if (inSnippet && snippetLines.length > 0) {
-      formatted.push("```" + guessLang(currentFileName) + "\n" + snippetLines.join("\n") + "\n```\n");
+      const lang = guessLang(currentFile);
+      output.push(`\n**📄 \`${currentFile}\`**\n`);
+      output.push("```" + lang);
+      output.push(snippetLines.join("\n"));
+      output.push("```\n");
+    }
+    inSnippet = false;
+    snippetLines = [];
+    currentFile = "";
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const fileHeader = isAnchorHeader(line);
+
+    if (fileHeader) {
+      flushSnippet();
+      inSnippet = true;
+      currentFile = fileHeader;
+      continue;
     }
 
-    return formatted.join("\n");
+    if (inSnippet) {
+      const trimmed = line.trim();
+      const isCodeLine =
+        /^\s*\*?\d+:\s*.*/.test(line) ||
+        trimmed.startsWith("//") ||
+        trimmed.startsWith("/*") ||
+        trimmed.startsWith("*") ||
+        trimmed === "..." ||
+        trimmed === "…" ||
+        trimmed.startsWith("[…") ||
+        trimmed.startsWith("[Showing") ||
+        trimmed === "}" ||
+        trimmed === "};" ||
+        trimmed === "]" ||
+        trimmed === "];" ||
+        trimmed === ")" ||
+        line.startsWith(" ") ||
+        line.startsWith("\t") ||
+        trimmed === "";
+
+      if (isCodeLine) {
+        snippetLines.push(line);
+      } else {
+        flushSnippet();
+        output.push(line);
+      }
+    } else {
+      output.push(line);
+    }
   }
 
-  return text;
+  flushSnippet();
+  return output.join("\n");
+}
+
+// Cache for rendered Markdown HTML (LRU cache up to 500 items)
+const renderCache = new Map<string, string>();
+const MAX_CACHE_SIZE = 500;
+
+function getCachedOrRender(key: string, fn: () => string): string {
+  const cached = renderCache.get(key);
+  if (cached !== undefined) return cached;
+  const result = fn();
+  if (renderCache.size >= MAX_CACHE_SIZE) {
+    const firstKey = renderCache.keys().next().value;
+    if (firstKey) renderCache.delete(firstKey);
+  }
+  renderCache.set(key, result);
+  return result;
 }
 
 export function renderMarkdown(text: string): string {
   if (!text) return "";
   return getCachedOrRender(text, () => {
-    const preprocessed = formatOmpSnippets(text);
+    const preprocessed = formatFileCodeSnippets(text);
     const raw = marked.parse(preprocessed, {
       renderer,
       async: false,

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from "react";
 import type { TranscriptEntry, WorkspaceGroup } from "../client";
 import type { BoundModel, RpcAvailableSlashCommand } from "../protocol";
 import { formatModelRef } from "../protocol";
@@ -66,11 +66,24 @@ const TranscriptMessageItem = React.memo(function TranscriptMessageItem({
     );
   }
   if (e.role === "tool") {
-    const cls = e.isError ? "msg tool error" : "msg tool";
+    const isError = Boolean(e.isError);
+    const toolLabel = e.toolName ? `${e.toolName}` : "tool output";
     return (
-      <div className={cls}>
-        <div className="role">Tool</div>
-        <div className="body">{e.text}</div>
+      <div className={`msg tool ${isError ? "error" : ""}`}>
+        <div className="tool-output-card">
+          <div className="tool-output-head">
+            <span className="tool-output-tag">🛠️ {toolLabel}</span>
+            {isError && <span className="status-pill" data-kind="error">Error</span>}
+            <button
+              type="button"
+              className="code-block-copy"
+              onClick={() => navigator.clipboard.writeText(e.text)}
+            >
+              Copy
+            </button>
+          </div>
+          <pre className="tool-output-pre"><code>{e.text}</code></pre>
+        </div>
       </div>
     );
   }
@@ -152,6 +165,42 @@ export function ChatPane({
 
   const emptyChat = !entries.some((e) => e.role === "user" || e.role === "assistant");
 
+  // Instant pixel-accurate scroll to bottom
+  const scrollToBottom = useCallback((instant = false) => {
+    const el = transcriptRef.current;
+    if (el) {
+      el.scrollTop = el.scrollHeight + 10000;
+    }
+    if (bottomAnchorRef.current) {
+      bottomAnchorRef.current.scrollIntoView({
+        behavior: instant ? "auto" : "auto",
+        block: "end",
+      });
+    }
+  }, [transcriptRef]);
+
+  // Synchronously lock to bottom before paint on session load
+  useLayoutEffect(() => {
+    if (activeViewTab === "chat" && entries.length > 0) {
+      scrollToBottom(true);
+    }
+  }, [entries[0]?.id, entries.length, activeViewTab, scrollToBottom]);
+
+  // Track ongoing stream or layout expansions
+  useEffect(() => {
+    if (activeViewTab === "chat" && entries.length > 0) {
+      scrollToBottom(true);
+      const raf = requestAnimationFrame(() => scrollToBottom(true));
+      const t1 = setTimeout(() => scrollToBottom(true), 30);
+      const t2 = setTimeout(() => scrollToBottom(true), 100);
+      return () => {
+        cancelAnimationFrame(raf);
+        clearTimeout(t1);
+        clearTimeout(t2);
+      };
+    }
+  }, [entries, isStreaming, activeViewTab, scrollToBottom]);
+
   // Get current workspace name
   const currentWorkspaceName = useMemo(() => {
     const found = workspaceGroups.find(
@@ -161,25 +210,6 @@ export function ChatPane({
     return currentCwd.split(/[/\\]/).pop() || "工作区";
   }, [workspaceGroups, currentCwd]);
 
-  const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
-    if (bottomAnchorRef.current) {
-      bottomAnchorRef.current.scrollIntoView({ behavior, block: "end" });
-    } else if (transcriptRef.current) {
-      transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
-    }
-  }, [transcriptRef]);
-
-  useEffect(() => {
-    if (activeViewTab === "chat") {
-      scrollToBottom("auto");
-      const t1 = setTimeout(() => scrollToBottom("auto"), 30);
-      const t2 = setTimeout(() => scrollToBottom("smooth"), 120);
-      return () => {
-        clearTimeout(t1);
-        clearTimeout(t2);
-      };
-    }
-  }, [entries, activeViewTab, scrollToBottom]);
   // Click outside to close popovers
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -357,6 +387,7 @@ export function ChatPane({
               {entries.map((e) => (
                 <TranscriptMessageItem key={e.id} entry={e} />
               ))}
+
               {isStreaming &&
                 (!entries.length ||
                   entries[entries.length - 1]?.role === "user" ||
@@ -373,8 +404,12 @@ export function ChatPane({
                     </div>
                   </div>
                 )}
-              <div ref={bottomAnchorRef} style={{ height: "1px", flexShrink: 0, opacity: 0 }} />
+              <div
+                ref={bottomAnchorRef}
+                style={{ height: "40px", minHeight: "40px", flexShrink: 0, opacity: 0 }}
+              />
             </main>
+          </>
         )}
 
         <footer id="composer-bar">

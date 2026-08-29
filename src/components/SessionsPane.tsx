@@ -7,7 +7,6 @@ interface SessionsPaneProps {
   activeSessionId?: string;
   workspaceGroups: WorkspaceGroup[];
   onNewSession: () => void;
-  onSelectWorkspace: (path: string) => void;
   onSelectSession: (session: SessionHistoryEntry) => void;
   onRefreshWorkspaces: () => void;
   onOpenSettings: () => void;
@@ -36,7 +35,6 @@ export function SessionsPane({
   activeSessionId,
   workspaceGroups,
   onNewSession,
-  onSelectWorkspace,
   onSelectSession,
   onRefreshWorkspaces,
   onOpenSettings,
@@ -93,6 +91,16 @@ export function SessionsPane({
   return (
     <aside id="pane-sessions" aria-label="Sessions">
       <div className="workspace-sidebar">
+        {/* Top Global New Chat Button (DeepSeek-Harness / Pi layout) */}
+        <button
+          type="button"
+          className="workspace-top-new-chat"
+          onClick={onNewSession}
+        >
+          <span className="workspace-top-icon">⊕</span>
+          <span>新会话</span>
+        </button>
+
         {/* Search Bar */}
         <div className="workspace-search-wrap">
           <span className="workspace-search-icon" aria-hidden="true">
@@ -130,14 +138,14 @@ export function SessionsPane({
           </div>
         </div>
 
-        {/* Workspace Groups List */}
+        {/* Workspace Groups Accordion */}
         <ul className="workspace-tree">
           {filteredGroups.length === 0 ? (
             <li className="empty-hint">暂无工作区记录</li>
           ) : (
             filteredGroups.map((group) => {
               const isCurrentActive = activeGroup?.id === group.id;
-              // Active group defaults to open, otherwise follows expandedGroups state
+              // Group defaults to open if it's active or manually expanded, or when searching
               const isOpen =
                 searchQuery.trim() !== "" ||
                 isCurrentActive ||
@@ -150,19 +158,15 @@ export function SessionsPane({
 
               return (
                 <li key={group.id} className="workspace-group">
+                  {/* Clicking folder header ONLY toggles collapse/expand! Never resets session */}
                   <div
                     className={`workspace-group-header ${
                       isCurrentActive ? "active" : ""
                     }`}
-                    onClick={() => {
-                      if (!isCurrentActive) {
-                        onSelectWorkspace(group.path);
-                      }
-                      toggleGroup(group.id);
-                    }}
+                    onClick={() => toggleGroup(group.id)}
                   >
                     <span className="workspace-folder-icon" aria-hidden="true">
-                      📁
+                      {isOpen ? "📂" : "📁"}
                     </span>
                     <span className="workspace-group-name" title={group.path}>
                       {group.name}
@@ -171,16 +175,6 @@ export function SessionsPane({
 
                   {isOpen && (
                     <div className="workspace-sessions-list">
-                      {isCurrentActive && (
-                        <button
-                          type="button"
-                          className="workspace-new-chat-btn"
-                          onClick={onNewSession}
-                        >
-                          新会话
-                        </button>
-                      )}
-
                       {group.sessions.length === 0 ? (
                         <div className="empty-hint" style={{ padding: "4px 8px" }}>
                           暂无会话
@@ -198,7 +192,10 @@ export function SessionsPane({
                               className={`workspace-session-row ${
                                 isActiveSession ? "active" : ""
                               }`}
-                              onClick={() => onSelectSession(s)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onSelectSession(s);
+                              }}
                             >
                               <span
                                 className="workspace-session-title"
@@ -220,7 +217,10 @@ export function SessionsPane({
                         <button
                           type="button"
                           className="workspace-expand-btn"
-                          onClick={() => toggleExpandSessions(group.id)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleExpandSessions(group.id);
+                          }}
                         >
                           展开其余 {remainingCount} 个会话
                         </button>
@@ -230,7 +230,10 @@ export function SessionsPane({
                         <button
                           type="button"
                           className="workspace-expand-btn"
-                          onClick={() => toggleExpandSessions(group.id)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleExpandSessions(group.id);
+                          }}
                         >
                           收起会话
                         </button>

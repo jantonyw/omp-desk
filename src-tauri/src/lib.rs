@@ -265,6 +265,8 @@ pub struct SessionMessageEntry {
     pub role: String,
     pub text: String,
     pub timestamp: Option<String>,
+    pub tool_name: Option<String>,
+    pub is_error: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -509,17 +511,29 @@ fn read_session_transcript(file_path: String) -> CmdResult {
 
     let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let mut messages = Vec::new();
+    let mut last_text = String::new();
 
     for line in content.lines() {
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
             let ty = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
-            if ty == "message_start" || ty == "message_end" || ty == "message" {
+            // In omp session jsonl, "message_end" carries the complete final assistant text,
+            // while "message" carries user input and standalone turns.
+            if ty == "message_end" || ty == "message" {
                 if let Some(msg) = val.get("message") {
                     let role = msg
                         .get("role")
                         .and_then(|v| v.as_str())
                         .unwrap_or("assistant")
                         .to_string();
+                    let tool_name = msg
+                        .get("toolName")
+                        .or_else(|| msg.get("tool_name"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let is_error = msg
+                        .get("isError")
+                        .or_else(|| msg.get("is_error"))
+                        .and_then(|v| v.as_bool());
                     let mut text = String::new();
                     if let Some(content_blocks) = msg.get("content").and_then(|c| c.as_array()) {
                         for block in content_blocks {
@@ -530,7 +544,9 @@ fn read_session_transcript(file_path: String) -> CmdResult {
                             }
                         }
                     }
-                    if !text.trim().is_empty() {
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() && trimmed != last_text {
+                        last_text = trimmed.to_string();
                         let timestamp = val
                             .get("timestamp")
                             .and_then(|v| v.as_str())
@@ -539,6 +555,8 @@ fn read_session_transcript(file_path: String) -> CmdResult {
                             role,
                             text,
                             timestamp,
+                            tool_name,
+                            is_error,
                         });
                     }
                 }

@@ -136,6 +136,14 @@ export function getEntries(): TranscriptEntry[] {
 export function clearTranscript(): void {
   entries = [];
   lastUserText = null;
+  resetLive();
+  emit({ mode: "full" });
+}
+
+export function setTranscriptEntries(items: TranscriptEntry[]): void {
+  entries = [...items];
+  lastUserText = items.filter((e) => e.role === "user").pop()?.text ?? null;
+  resetLive();
   emit({ mode: "full" });
 }
 
@@ -159,11 +167,20 @@ export function appendUser(text: string): void {
 function echoUser(text: string): void {
   if (!text) return;
   if (text.startsWith(PLAN_PREFIX) || text.startsWith(EXECUTE_PREFIX)) {
-    // Already shown via appendUser(typed); never duplicate the injected payload.
     return;
   }
-  const normalized = stripDeskModePrefix(text);
-  if (normalized === lastUserText || text === lastUserText) return;
+  const normalized = stripDeskModePrefix(text).trim();
+  if (normalized === lastUserText?.trim() || text.trim() === lastUserText?.trim()) return;
+
+  const lastEntry = entries[entries.length - 1];
+  if (
+    lastEntry &&
+    lastEntry.role === "user" &&
+    (lastEntry.text.trim() === normalized || lastEntry.text.trim() === text.trim())
+  ) {
+    return;
+  }
+
   appendUser(text);
 }
 
@@ -349,6 +366,8 @@ export interface SessionMessageEntry {
   role: string;
   text: string;
   timestamp?: string;
+  tool_name?: string;
+  is_error?: boolean;
 }
 
 export interface WorkspaceGroup {
@@ -802,7 +821,9 @@ function handleMessageUpdate(f: Record<string, unknown>): boolean {
     return false;
   }
   if (evt.type === "done" || evt.type === "error") {
-    resetLive();
+    if (live) {
+      live.streaming = false;
+    }
     return false;
   }
   return false;
@@ -824,20 +845,33 @@ function ensureLive(): void {
 }
 
 function finalizeAssistant(msg: AgentMessage): void {
-  // `message_end` carries the complete message; use it to settle the text.
   const text = extractText(msg);
-  if (text) {
-    if (!live) {
-      live = {
-        id: `a${seq++}`,
-        role: "assistant",
-        text: "",
-        thinking: "",
-        streaming: true,
-      };
-      entries.push(live as TranscriptEntry);
+  if (live) {
+    if (text) live.text = text;
+    live.streaming = false;
+    resetLive();
+    return;
+  }
+
+  const lastEntry = entries[entries.length - 1];
+  if (lastEntry && lastEntry.role === "assistant") {
+    if (!lastEntry.text || lastEntry.streaming) {
+      if (text) lastEntry.text = text;
+      lastEntry.streaming = false;
+      return;
     }
-    if (!live.text) live.text = text;
+    if (text && lastEntry.text.trim() === text.trim()) {
+      return; // Already rendered identical text
+    }
+  }
+
+  if (text) {
+    entries.push({
+      id: `a${seq++}`,
+      role: "assistant",
+      text,
+      streaming: false,
+    });
   }
   resetLive();
 }

@@ -14,6 +14,7 @@ import {
   getPlanTasks,
   setPlanTasks,
   clearPlanTasks,
+  setTranscriptEntries,
   togglePlanTask,
   onPlanTasksChange,
   getAvailableModelsCache,
@@ -387,13 +388,30 @@ export function App(): React.ReactElement {
   const handleSelectSession = async (sessionItem: SessionHistoryEntry) => {
     try {
       setActiveSessionId(sessionItem.id);
+      if (sessionItem.cwd && sessionItem.cwd !== settings.cwd) {
+        const nextSettings = { ...settings, cwd: sessionItem.cwd };
+        setSettings(nextSettings);
+        saveSettings(nextSettings);
+      }
       const rawMessages = await fetchSessionTranscript(sessionItem.file_path);
       const transcriptMessages: TranscriptEntry[] = rawMessages.map((m, idx) => ({
         id: `hist-${sessionItem.id}-${idx}`,
-        role: m.role === "user" ? "user" : "assistant",
+        role: m.role === "user" ? "user" : m.role === "tool" ? "tool" : "assistant",
         text: m.text,
+        toolName: m.tool_name,
+        isError: m.is_error,
       }));
-      setEntries(transcriptMessages);
+
+      // Phase 1 (Instant 0ms): For large sessions, mount the bottom 16 first so clicking is instant
+      if (transcriptMessages.length > 16) {
+        setTranscriptEntries(transcriptMessages.slice(-16));
+        // Phase 2: Hydrate full list in next tick without freezing the UI frame
+        setTimeout(() => {
+          setTranscriptEntries(transcriptMessages);
+        }, 50);
+      } else {
+        setTranscriptEntries(transcriptMessages);
+      }
     } catch (err) {
       appendSystem(`[load history failed] ${String(err)}`);
     }
@@ -632,7 +650,6 @@ export function App(): React.ReactElement {
           activeSessionId={activeSessionId}
           workspaceGroups={workspaceGroups}
           onNewSession={() => void doStart()}
-          onSelectWorkspace={handleSelectWorkspace}
           onSelectSession={handleSelectSession}
           onRefreshWorkspaces={loadWorkspaces}
           onOpenSettings={() => setSettingsOpen(true)}
