@@ -1,9 +1,11 @@
 //! omp-desk — a Tauri 2 desktop shell around the `omp` coding agent.
 //!
-//! This crate owns exactly two responsibilities:
+//! This crate owns:
 //!   1. Process management: spawn/kill the `omp --mode rpc-ui` child and speak
 //!      its stdio JSONL protocol (see `process.rs`).
 //!   2. The Tauri command surface + `rpc_event` bridge used by the frontend.
+//!   3. Idle-only self-update of the configured `omp` CLI via official
+//!      `omp update` / `omp update --check` (see `omp_update.rs`).
 //!
 //! The agent itself, its tools, providers, and the model client all live in
 //! `omp`; this app reimplements none of them.
@@ -12,19 +14,22 @@
 
 mod event_bridge;
 pub mod ide;
+mod omp_update;
 mod process;
 
 use std::sync::Arc;
 
 use event_bridge::EventOutbox;
+use omp_update::{spawn_blocked_reason, OmpUpdater, UpdateConfig};
 use process::{next_req_id, OmpProcess, RpcEvent, SessionSettings, SessionStatus};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 
 /// Shared handle to the single active omp session.
 struct Session {
-    proc: tokio::sync::Mutex<Option<Arc<OmpProcess>>>,
+    proc: Arc<tokio::sync::Mutex<Option<Arc<OmpProcess>>>>,
     emit: EventOutbox,
+    updater: Arc<OmpUpdater>,
 }
 
 #[derive(Serialize)]
@@ -53,6 +58,9 @@ async fn start_session(
     state: State<'_, Session>,
     settings: SessionSettings,
 ) -> CmdResult {
+    if let Some(reason) = spawn_blocked_reason(state.updater.is_updating().await) {
+        return Err(reason.to_string());
+    }
     let proc = {
         let mut guard = state.proc.lock().await;
         if let Some(old) = guard.take() {
@@ -82,6 +90,7 @@ async fn start_session(
         code: None,
         message: None,
     });
+    state.updater.remember_session(settings).await;
 
     Ok(json(view))
 }
@@ -237,6 +246,26 @@ async fn stop_session(state: State<'_, Session>) -> CmdResult {
         host.kill().await;
     }
     Ok(ack(true, None))
+}
+
+#[tauri::command]
+async fn get_omp_update_status(state: State<'_, Session>) -> CmdResult {
+    Ok(json(state.updater.snapshot().await))
+}
+
+#[tauri::command]
+async fn check_omp_update(state: State<'_, Session>) -> CmdResult {
+    Ok(json(state.updater.check(false).await))
+}
+
+#[tauri::command]
+async fn apply_omp_update(state: State<'_, Session>) -> CmdResult {
+    Ok(json(state.updater.apply().await))
+}
+
+#[tauri::command]
+async fn configure_omp_update(state: State<'_, Session>, config: UpdateConfig) -> CmdResult {
+    Ok(json(state.updater.configure(config).await))
 }
 
 /// Open a URL in the system browser (used by extension `open_url` requests).
@@ -657,9 +686,12 @@ pub fn run() {
                 })
                 .await;
         });
+        let proc = Arc::new(tokio::sync::Mutex::new(None));
+        let updater = Arc::new(OmpUpdater::new(proc.clone(), emit.clone()));
         Ok(Session {
-            proc: tokio::sync::Mutex::new(None),
+            proc,
             emit,
+            updater,
         })
     };
     tauri::Builder::default()
@@ -667,7 +699,13 @@ pub fn run() {
         .setup(move |app| {
             configure_webview_gpu(app);
             let session = mk(app)?;
+            let handle = app.handle().clone();
+            session.updater.bind_app(handle);
+            let updater = session.updater.clone();
             app.manage(session);
+            tauri::async_runtime::spawn(async move {
+                updater.run_loop().await;
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -678,6 +716,10 @@ pub fn run() {
             respond_extension_ui,
             get_status,
             stop_session,
+            get_omp_update_status,
+            check_omp_update,
+            apply_omp_update,
+            configure_omp_update,
             open_url,
             list_session_history,
             list_workspace_groups,

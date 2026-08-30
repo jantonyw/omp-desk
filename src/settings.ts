@@ -5,6 +5,8 @@ const SETTINGS_KEY = "omp-desk.settings";
 const LEGACY_DEFAULT_MODEL = "deepseek/deepseek-v4-pro";
 const homeCwdPromise: Promise<string> = homeDir().catch(() => "/workspace");
 
+export const DEFAULT_UPDATE_INTERVAL_HOURS = 6;
+
 export function defaultSettings(): Settings {
   return {
     ompPath: "omp",
@@ -14,6 +16,18 @@ export function defaultSettings(): Settings {
     noSkills: false,
     noRules: false,
     extraArgs: "",
+    autoUpdateOmp: true,
+    ompUpdateIntervalHours: DEFAULT_UPDATE_INTERVAL_HOURS,
+  };
+}
+
+export function normalizeSettings(s: Settings): Settings {
+  const hours = Number(s.ompUpdateIntervalHours);
+  return {
+    ...s,
+    autoUpdateOmp: s.autoUpdateOmp !== false,
+    ompUpdateIntervalHours:
+      Number.isFinite(hours) && hours > 0 ? hours : DEFAULT_UPDATE_INTERVAL_HOURS,
   };
 }
 
@@ -21,7 +35,9 @@ export async function loadSettings(): Promise<Settings> {
   let s: Settings;
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
-    s = raw ? { ...defaultSettings(), ...(JSON.parse(raw) as Partial<Settings>) } : defaultSettings();
+    s = raw
+      ? normalizeSettings({ ...defaultSettings(), ...(JSON.parse(raw) as Partial<Settings>) })
+      : defaultSettings();
   } catch {
     s = defaultSettings();
   }
@@ -35,7 +51,7 @@ export async function loadSettings(): Promise<Settings> {
 }
 
 export function saveSettings(s: Settings): void {
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(normalizeSettings(s)));
 }
 
 export interface SettingsFormElements {
@@ -58,6 +74,8 @@ export async function readSettingsForm(form: SettingsFormElements): Promise<Sett
     noSkills: form.noSkills.checked,
     noRules: form.noRules.checked,
     extraArgs: form.extraArgs.value,
+    autoUpdateOmp: true,
+    ompUpdateIntervalHours: DEFAULT_UPDATE_INTERVAL_HOURS,
   };
 }
 

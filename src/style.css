@@ -280,6 +280,59 @@ body {
   flex: 0 0 auto;
 }
 
+.omp-update-status {
+  font-size: 11px;
+  color: var(--fg-mute);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.omp-update-status.is-available {
+  color: var(--accent);
+}
+
+.omp-update-status.is-failed {
+  color: var(--error);
+}
+
+.omp-update-status.is-updating,
+.omp-update-status.is-checking {
+  color: var(--fg);
+}
+
+.omp-update-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.omp-update-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.omp-update-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.omp-update-error {
+  font-size: 11px;
+  color: var(--error);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .theme-picker {
   display: inline-flex;
   align-items: center;

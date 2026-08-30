@@ -30,6 +30,7 @@ import {
   getLastAssistantText,
   parsePlanSteps,
   subscribeEvents,
+  subscribeOmpUpdate,
   handleEvent,
   formatModelRef,
   PLAN_PREFIX,
@@ -37,8 +38,13 @@ import {
   stripMarkdownEmphasis,
   onExtensionUiRequest,
   respondExtensionUi,
+  getOmpUpdateStatus,
+  checkOmpUpdate,
+  applyOmpUpdate,
+  configureOmpUpdate,
   type Status,
   type Settings,
+  type OmpUpdateStatus,
   type TranscriptEntry,
   type ChangedFile,
   type PlanTask,
@@ -47,7 +53,7 @@ import {
 } from "./client";
 import type { BoundModel, RpcAvailableSlashCommand, RpcEventPayload, ExtensionUiRequest } from "./protocol";
 import { loadTheme, saveTheme, applyTheme, type ThemeId } from "./theme";
-import { loadSettings, saveSettings } from "./settings";
+import { defaultSettings, loadSettings, normalizeSettings, saveSettings } from "./settings";
 import { filterCommands } from "./slash-palette";
 
 const ACTIVE_SESSION_KEY = "omp-desk.active-session";
@@ -93,15 +99,8 @@ export function App(): React.ReactElement {
   const [theme, setThemeState] = useState<ThemeId>(loadTheme);
 
   // Settings & Status state
-  const [settings, setSettings] = useState<Settings>(() => ({
-    ompPath: "omp",
-    cwd: "/workspace",
-    model: "",
-    noSession: false,
-    noSkills: false,
-    noRules: false,
-    extraArgs: "",
-  }));
+  const [settings, setSettings] = useState<Settings>(defaultSettings);
+  const [updateStatus, setUpdateStatus] = useState<OmpUpdateStatus | null>(null);
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
   const [status, setStatus] = useState<Status>({
     started: false,
@@ -443,6 +442,11 @@ export function App(): React.ReactElement {
         ? { ...s, cwd: savedSession.cwd }
         : s;
       updateSettings(initialSettings);
+      try {
+        setUpdateStatus(await configureOmpUpdate(initialSettings));
+      } catch {
+        void getOmpUpdateStatus().then(setUpdateStatus).catch(() => undefined);
+      }
       setActiveModelRef(initialSettings.model);
 
       // Refreshing the WebView does not restart the Rust backend. Reuse its
@@ -493,6 +497,35 @@ export function App(): React.ReactElement {
       unsubEvents?.();
     };
   }, []);
+  useEffect(() => {
+    if (status.is_streaming || !updateStatus?.pending_apply) return;
+    void applyOmpUpdate()
+      .then(setUpdateStatus)
+      .catch(() => undefined);
+  }, [status.is_streaming, updateStatus?.pending_apply]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let unsub: (() => void) | undefined;
+    void subscribeOmpUpdate((status) => {
+      if (!cancelled) setUpdateStatus(status);
+    })
+      .then((fn) => {
+        if (cancelled) fn();
+        else unsub = fn;
+      })
+      .catch(() => undefined);
+    void getOmpUpdateStatus()
+      .then((status) => {
+        if (!cancelled) setUpdateStatus(status);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      unsub?.();
+    };
+  }, []);
+
   const handleThemeChange = (newTheme: ThemeId) => {
     setThemeState(newTheme);
     saveTheme(newTheme);
@@ -500,10 +533,28 @@ export function App(): React.ReactElement {
   };
 
   const handleApplySettings = async (newSettings: Settings) => {
-    saveSettings(newSettings);
-    updateSettings(newSettings);
+    const normalized = normalizeSettings(newSettings);
+    saveSettings(normalized);
+    updateSettings(normalized);
     setSettingsOpen(false);
-    await doStart(newSettings);
+    try {
+      setUpdateStatus(await configureOmpUpdate(normalized));
+    } catch (err) {
+      appendSystem(`[omp update config failed] ${String(err)}`);
+    }
+    await doStart(normalized);
+  };
+
+  const handleCheckOmpUpdate = () => {
+    void checkOmpUpdate()
+      .then(setUpdateStatus)
+      .catch((err) => appendSystem(`[omp update check failed] ${String(err)}`));
+  };
+
+  const handleApplyOmpUpdate = () => {
+    void applyOmpUpdate()
+      .then(setUpdateStatus)
+      .catch((err) => appendSystem(`[omp update failed] ${String(err)}`));
   };
 
   const handleSelectWorkspace = async (newPath: string) => {
@@ -803,14 +854,20 @@ export function App(): React.ReactElement {
       <TopBar
         theme={theme}
         settingsOpen={settingsOpen}
+        updateStatus={updateStatus}
         onThemeChange={handleThemeChange}
         onToggleSettings={() => setSettingsOpen((prev) => !prev)}
+        onCheckUpdate={handleCheckOmpUpdate}
+        onApplyUpdate={handleApplyOmpUpdate}
       />
 
       <SettingsPanel
         isOpen={settingsOpen}
         settings={settings}
+        updateStatus={updateStatus}
         onApply={handleApplySettings}
+        onCheckUpdate={handleCheckOmpUpdate}
+        onApplyUpdate={handleApplyOmpUpdate}
       />
 
       <div id="studio" className={sideOpen ? "" : "side-closed"}>

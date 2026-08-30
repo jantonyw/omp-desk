@@ -54,6 +54,24 @@ export interface Settings {
   noSkills: boolean;
   noRules: boolean;
   extraArgs: string;
+  autoUpdateOmp: boolean;
+  ompUpdateIntervalHours: number;
+}
+
+export type OmpUpdateState =
+  | "checking"
+  | "updating"
+  | "available"
+  | "up_to_date"
+  | "failed";
+
+export interface OmpUpdateStatus {
+  state: OmpUpdateState;
+  current?: string | null;
+  latest?: string | null;
+  error?: string | null;
+  pending_apply?: boolean;
+  auto_update?: boolean;
 }
 
 export interface Status {
@@ -329,6 +347,36 @@ export async function subscribeEvents(
 // ---------------------------------------------------------------------------
 // Command wrappers
 // ---------------------------------------------------------------------------
+
+export async function getOmpUpdateStatus(): Promise<OmpUpdateStatus> {
+  return invoke<OmpUpdateStatus>("get_omp_update_status");
+}
+
+export async function checkOmpUpdate(): Promise<OmpUpdateStatus> {
+  return invoke<OmpUpdateStatus>("check_omp_update");
+}
+
+export async function applyOmpUpdate(): Promise<OmpUpdateStatus> {
+  return invoke<OmpUpdateStatus>("apply_omp_update");
+}
+
+export async function configureOmpUpdate(settings: Settings): Promise<OmpUpdateStatus> {
+  const hours = Number(settings.ompUpdateIntervalHours);
+  const intervalSecs = Number.isFinite(hours) && hours > 0 ? Math.round(hours * 3600) : 6 * 3600;
+  return invoke<OmpUpdateStatus>("configure_omp_update", {
+    config: {
+      omp_path: settings.ompPath,
+      auto_update: settings.autoUpdateOmp !== false,
+      interval_secs: intervalSecs,
+    },
+  });
+}
+
+export async function subscribeOmpUpdate(
+  onEvent: (status: OmpUpdateStatus) => void,
+): Promise<UnlistenFn> {
+  return listen<OmpUpdateStatus>("omp_update", (e) => onEvent(e.payload));
+}
 
 export async function startSession(settings: Settings, resume?: string): Promise<Status> {
   return invoke<Status>("start_session", {
