@@ -1,5 +1,7 @@
 import React, { useState, useMemo } from "react";
 import type { Status, WorkspaceGroup, SessionHistoryEntry } from "../client";
+import type { RpcAvailableSlashCommand } from "../protocol";
+import { AgentCollection } from "./AgentCollection";
 
 interface SessionsPaneProps {
   status: Status;
@@ -11,6 +13,8 @@ interface SessionsPaneProps {
   onRefreshWorkspaces: () => void;
   onOpenSettings: () => void;
   onAddWorkspace: () => void;
+  onInsertAgentSpawn: (text: string) => void;
+  onInsertAgentSlash: (cmd: RpcAvailableSlashCommand) => void;
 }
 
 function formatRelativeDays(timestamp: string | number): string {
@@ -39,6 +43,8 @@ export function SessionsPane({
   onRefreshWorkspaces,
   onOpenSettings,
   onAddWorkspace,
+  onInsertAgentSpawn,
+  onInsertAgentSlash,
 }: SessionsPaneProps): React.ReactElement {
   const [searchQuery, setSearchQuery] = useState("");
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
@@ -245,6 +251,12 @@ export function SessionsPane({
             })
           )}
         </ul>
+
+        {/* Agent Collection */}
+        <AgentCollection
+          onInsertSpawn={onInsertAgentSpawn}
+          onInsertSlash={onInsertAgentSlash}
+        />
 
         {/* Bottom Settings Button */}
         <div className="workspace-bottom-settings">

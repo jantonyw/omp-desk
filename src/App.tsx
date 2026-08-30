@@ -605,6 +605,13 @@ export function App(): React.ReactElement {
     composerRef.current?.focus();
   };
 
+  const handleInsertAgentSpawn = (text: string) => {
+    // Agent click inserts a spawn instruction prefix; never auto-sends.
+    // Keep an existing draft by appending below it instead of replacing.
+    setComposerText((prev) => (prev.trim() ? `${prev.trimEnd()}\n\n${text}` : text));
+    composerRef.current?.focus();
+  };
+
   const handleSend = () => {
     const text = composerText;
     if (!text.trim()) return;
@@ -833,6 +840,8 @@ export function App(): React.ReactElement {
           onRefreshWorkspaces={loadWorkspaces}
           onOpenSettings={() => setSettingsOpen(true)}
           onAddWorkspace={handleAddWorkspace}
+          onInsertAgentSpawn={handleInsertAgentSpawn}
+          onInsertAgentSlash={handleInsertSlash}
         />
 
         <ChatPane
